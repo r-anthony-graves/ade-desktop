@@ -65,15 +65,16 @@ def post_json(url: str, body: dict, timeout: float) -> dict:
 
 
 def request_json(method: str, url: str, body: dict | None = None,
-                 timeout: float = 30.0) -> dict:
+                 timeout: float = 30.0, headers: dict | None = None) -> dict:
     """Any method with an optional JSON body; the result read as post_json
-    reads it (from 400 up, the status travels with the error)."""
+    reads it (from 400 up, the status travels with the error). `headers`
+    are sent as given and never logged (The Path's token travels in one)."""
     try:
         with httpx.Client(trust_env=False, timeout=timeout) as client:
             if body is None:
-                response = client.request(method, url)
+                response = client.request(method, url, headers=headers)
             else:
-                response = client.request(method, url, json=body)
+                response = client.request(method, url, json=body, headers=headers)
             return _result(response)
     except Exception as exc:  # noqa: BLE001 -- unreachable is a state
         return {"error": f"{type(exc).__name__}: {exc}"}
