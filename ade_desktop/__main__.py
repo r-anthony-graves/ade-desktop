@@ -1,0 +1,144 @@
+"""python -m ade_desktop -- the app.
+
+    python -m ade_desktop            run it (a second launch brings the
+                                     running one forward and exits)
+    python -m ade_desktop --smoke    build it headless, poll for a moment,
+                                     print what it saw as JSON, write a PNG
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import tempfile
+import time
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+log = logging.getLogger("ade_desktop")
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="ade_desktop")
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--smoke-wait", type=int, default=4000)
+    parser.add_argument("--smoke-out", default="smoke.png")
+    return parser.parse_args(argv)
+
+
+def setup_logging(directory: Path) -> None:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(directory / "desktop.log",
+                                      maxBytes=1_000_000, backupCount=3,
+                                      encoding="utf-8")
+    except OSError:
+        return
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+def build_window(*, state_path: Path, quit_fn=None):
+    from ade_desktop.ade_status import AdeStatusClient
+    from ade_desktop.app import DesktopWindow
+    from ade_desktop.sections import build_sections
+
+    return DesktopWindow(build_sections(), AdeStatusClient(),
+                         state_path=state_path, quit_fn=quit_fn)
+
+
+def smoke_report(win) -> dict:
+    trader = next((s for s in win.sections if s.name == "Trader"), None)
+    pills = {}
+    if trader is not None and trader.placeholder_reason is None:
+        for attr in ("pill_desk", "pill_kraken", "pill_engine", "pill_mode"):
+            widget = getattr(trader.widget, attr, None)
+            if widget is not None:
+                pills[attr] = widget.text()
+    registry = [s.name for s in win.sections]
+    trader_ok = trader is not None and (
+        trader.placeholder_reason is not None or len(pills) == 4)
+    ok = bool(registry) and win.section_names() == registry and trader_ok \
+        and bool(win.ade_pill.text())
+    return {
+        "ok": ok,
+        "sections": win.section_names(),
+        "ade_pill": win.ade_pill.text(),
+        "ade_tooltip": win.ade_pill.toolTip(),
+        "brain": win.brain_label.text(),
+        "trader": ("missing" if trader is None else
+                   "placeholder" if trader.placeholder_reason else "panel"),
+        "trader_reason": trader.placeholder_reason if trader else None,
+        "trader_pills": pills,
+    }
+
+
+def run_smoke(app, args) -> int:
+    # Never the real window.json: a smoke run must not move Ray's window.
+    state = Path(tempfile.mkdtemp(prefix="ade-desktop-smoke-")) / "window.json"
+    win = build_window(state_path=state, quit_fn=app.quit)
+    win.start()
+    win.show()
+    deadline = time.monotonic() + max(0, args.smoke_wait) / 1000.0
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
+    report = smoke_report(win)
+    out = Path(args.smoke_out)
+    report["png_written"] = bool(win.grab().save(str(out)))
+    report["png"] = str(out.resolve())
+    win.quit_app()
+    print(json.dumps(report, indent=2))
+    log.info("smoke: ok=%s", report["ok"])
+    return 0 if report["ok"] else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.smoke:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        # Headless Qt ships no fonts: without this every letter in the smoke
+        # PNG is an empty box, and the picture proves only the layout.
+        if os.name == "nt":
+            os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(
+                os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
+
+    from PySide6.QtWidgets import QApplication
+
+    from ade_desktop.geometry import state_dir
+    from ade_desktop.single_instance import SingleInstance
+
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("Ade")
+    # Close hides to the tray; DesktopWindow quits explicitly when it must.
+    app.setQuitOnLastWindowClosed(False)
+    directory = state_dir()
+    setup_logging(directory)
+    log.info("starting (smoke=%s)", args.smoke)
+
+    if args.smoke:
+        return run_smoke(app, args)
+
+    guard = SingleInstance()
+    if guard.notify_running():
+        log.info("already running: asked it to show itself")
+        return 0
+    if not guard.listen():
+        log.warning("single-instance listen failed; continuing anyway")
+
+    win = build_window(state_path=directory / "window.json")
+    guard.show_requested.connect(win.show_and_raise)
+    win.start()
+    win.show_initial()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
