@@ -35,7 +35,10 @@ Essentials leaves out PySide6-Addons, which is where QtWebEngine lives.
     .\run-desktop.ps1 -Stop
 
 Close hides it to the tray, and the tray's **Quit** ends it. Only one runs
-per user: a second launch brings the first forward.
+per user: a second launch brings the first forward. A lock file in the state
+directory decides which one that is. `-Stop` is a hard kill and leaves the
+lock behind, but the lock only counts while its owner is alive, so the next
+launch takes it over.
 
 ## What it shows
 
