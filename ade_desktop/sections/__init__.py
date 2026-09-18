@@ -33,6 +33,7 @@ def placeholder(name: str, message: str) -> Section:
 def build_sections(active=None) -> list[Section]:
     """`active` is the app's one ActiveProject; PM (and QA after it) share
     it. None builds a private one -- a test, or a section on its own."""
+    from ade_desktop.sections.code import build_code_section
     from ade_desktop.sections.path import build_path_section
     from ade_desktop.sections.pm import build_pm_section
     from ade_desktop.sections.qa import build_qa_section
@@ -41,4 +42,4 @@ def build_sections(active=None) -> list[Section]:
 
     active = active if active is not None else ActiveProject()
     return [build_trader_section(trader_root()), build_pm_section(active),
-            build_qa_section(active), build_path_section()]
+            build_qa_section(active), build_path_section(), build_code_section()]

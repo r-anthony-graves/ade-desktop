@@ -90,7 +90,7 @@ def test_build_sections_is_trader_pm_qa_path(
         qapp, isolated_trader_imports, monkeypatch):
     monkeypatch.setenv("COMMAND_CENTER_DESK", "http://127.0.0.1:9")
     sections = build_sections()
-    assert [s.name for s in sections] == ["Trader", "PM", "QA", "Path"]
+    assert [s.name for s in sections] == ["Trader", "PM", "QA", "Path", "Code"]
     assert all(isinstance(s, Section) for s in sections)
 
 
