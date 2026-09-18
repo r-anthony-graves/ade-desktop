@@ -81,7 +81,8 @@ def connect_instance(guard, win) -> None:
     guard.show_requested.connect(win.show_and_raise)
 
 
-def build_window(*, state_path: Path, quit_fn=None):
+def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
+                 avatar_running: bool | None = None):
     from ade_desktop.ade_status import AdeStatusClient
     from ade_desktop.app import DesktopWindow
     from ade_desktop.conversation.approvals import ApprovalWatcher
@@ -94,8 +95,31 @@ def build_window(*, state_path: Path, quit_fn=None):
     # state_path, so it never touches the real conversation either.
     store = ThreadStore(Path(state_path).with_name("threads.json"))
     panel = ConversationPanel(ConversationClient(), ApprovalWatcher(), store)
-    return DesktopWindow(build_sections(), AdeStatusClient(),
-                         state_path=state_path, quit_fn=quit_fn, panel=panel)
+    win = DesktopWindow(build_sections(), AdeStatusClient(),
+                        state_path=state_path, quit_fn=quit_fn, panel=panel)
+    if orb:
+        win.orb_controller = build_orb(win, state_path, avatar_running)
+    return win
+
+
+def build_orb(win, state_path: Path, avatar_running: bool | None = None):
+    """The orb and its voice (piece 3). Nothing here opens a device or
+    shows a window until OrbController.start()."""
+    from ade_desktop.orb.avatar_probe import avatar_running as probe
+    from ade_desktop.orb.controller import OrbController
+    from ade_desktop.orb.glyph import GlyphRenderer
+    from ade_desktop.orb.mood import Mood
+    from ade_desktop.orb.window import OrbWindow
+    from ade_desktop.voice.controller import VoiceController
+    from ade_desktop.voice.mic import MicListener
+    from ade_desktop.voice.speaker import Speaker
+
+    if avatar_running is None:
+        avatar_running = probe()
+    return OrbController(
+        window=win, orb=OrbWindow(), renderer=GlyphRenderer(), mood=Mood(),
+        speaker=Speaker(), mic=MicListener(), voice=VoiceController(win.panel),
+        state_path=Path(state_path), avatar_running=avatar_running)
 
 
 def smoke_report(win) -> dict:
@@ -133,9 +157,10 @@ def smoke_report(win) -> dict:
 def run_smoke(app, args) -> int:
     # Never the real window.json: a smoke run must not move Ray's window.
     state = Path(tempfile.mkdtemp(prefix="ade-desktop-smoke-")) / "window.json"
-    win = build_window(state_path=state, quit_fn=app.quit)
+    win = build_window(state_path=state, quit_fn=app.quit, avatar_running=False)
     win.start()
     win.show()
+    win.orb_controller.start(open_mic=False)   # never the real microphone
     deadline = time.monotonic() + max(0, args.smoke_wait) / 1000.0
     while time.monotonic() < deadline:
         app.processEvents()
@@ -145,6 +170,18 @@ def run_smoke(app, args) -> int:
     out = Path(args.smoke_out)
     report["png_written"] = bool(win.grab().save(str(out)))
     report["png"] = str(out.resolve())
+    ctl = win.orb_controller
+    frame = ctl.orb.frame
+    orb_png = out.with_name(out.stem + "-orb" + out.suffix)
+    report["orb"] = {
+        "shown": ctl.orb.isVisible(),
+        "frame": None if frame is None else [frame.width(), frame.height()],
+        "online": ctl.online,
+        "mood": ctl.mood.frame().get("mood"),
+        "mic_open": ctl.mic.running(),
+        "png_written": bool(frame is not None and frame.save(str(orb_png))),
+        "png": str(orb_png.resolve()),
+    }
     win.quit_app()
     print(json.dumps(report, indent=2))
     log.info("smoke: ok=%s", report["ok"])
@@ -183,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     connect_instance(guard, win)
     win.start()
     win.show_initial()
+    win.orb_controller.start()
     code = app.exec()
     guard.release()
     return code

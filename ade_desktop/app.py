@@ -94,6 +94,7 @@ class DesktopWindow(QMainWindow):
         self._quitting = False
         self._last_health: str | None = None
         self._start_maximized = False
+        self.orb_controller = None      # piece 3: set by build_window
 
         self.setWindowTitle("Ade")
         if ICON_PATH.exists():
@@ -276,6 +277,11 @@ class DesktopWindow(QMainWindow):
                     section.stop()
                 except Exception:  # noqa: BLE001 -- quitting must finish
                     log.exception("stopping section %s failed", section.name)
+        if self.orb_controller is not None:
+            try:
+                self.orb_controller.stop()
+            except Exception:  # noqa: BLE001 -- quitting must finish
+                log.exception("stopping the orb failed")
         if self.panel is not None:
             for step in (self.panel.on_quit, self.panel.client.stop,
                          self.panel.watcher.stop):
@@ -311,13 +317,16 @@ class DesktopWindow(QMainWindow):
     def save_state(self) -> None:
         g = self.normalGeometry() if self.isMaximized() else self.geometry()
         self._remember_panel_width()
-        save_state(self._state_path, {
+        # Merged, not replaced: window.json also holds the orb's own keys.
+        state = load_state(self._state_path)
+        state.update({
             "x": g.x(), "y": g.y(), "w": g.width(), "h": g.height(),
             "maximized": self.isMaximized(),
             "section": self.current_section(),
             "panel_open": self.panel_open(),
             "panel_width": self._panel_width,
         })
+        save_state(self._state_path, state)
 
     def _restore_state(self) -> None:
         state = load_state(self._state_path)

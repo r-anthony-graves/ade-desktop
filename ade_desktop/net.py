@@ -64,6 +64,27 @@ def post_json(url: str, body: dict, timeout: float) -> dict:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def post_bytes(url: str, body: dict, timeout: float) -> dict:
+    """POST JSON, expecting raw bytes back (/v1/voice/speak answers
+    audio/wav, not base64): {"wav": bytes} -- or the usual error dict, the
+    envelope kept whole, when the answer is an error or is JSON."""
+    try:
+        with httpx.Client(trust_env=False, timeout=timeout) as client:
+            response = client.post(url, json=body)
+    except Exception as exc:  # noqa: BLE001 -- unreachable is a state
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    ctype = response.headers.get("content-type", "")
+    if response.status_code < 400 and not ctype.startswith("application/json"):
+        if not response.content:
+            return {"error": f"HTTP {response.status_code}: empty body"}
+        return {"wav": response.content}
+    result = _result(response)
+    if "error" not in result:
+        return {"error": f"HTTP {response.status_code}: JSON, not audio",
+                "detail": result}
+    return result
+
+
 def post_file(url: str, path, fields: dict, timeout: float) -> dict:
     """One file as multipart `file`, plus form `fields` (for /v1/upload:
     relpath and overwrite)."""

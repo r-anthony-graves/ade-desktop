@@ -55,6 +55,10 @@ class ApprovalWatcher(QObject):
         if running is not None:
             running.join(2.0)
 
+    def pending_count(self) -> int:
+        """Live approvals as of the last good poll (the orb's `pending`)."""
+        return len(self._pending)
+
     def poll_now(self) -> None:
         with self._lock:
             if self._stopped.is_set() or self._inflight is not None:

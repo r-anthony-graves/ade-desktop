@@ -44,6 +44,11 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
         "pill_desk", "pill_kraken", "pill_engine", "pill_mode"}
     assert report["png_written"] is True
     assert out.exists() and out.stat().st_size > 0
+    orb = report["orb"]
+    assert orb["shown"] is True and orb["frame"] is not None
+    assert orb["mic_open"] is False            # a smoke run never opens the mic
+    assert orb["online"] is False and orb["mood"] == "dormant"   # Ade OS is DOWN here
+    assert orb["png_written"] is True
     # The smoke run used ADE_DESKTOP_STATE_DIR, never the real directory.
     assert (tmp_path / "state" / "desktop.log").exists()
 

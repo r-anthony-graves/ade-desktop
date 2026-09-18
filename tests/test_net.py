@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from ade_desktop.net import get_json, post_file, post_json, stream_lines
+from ade_desktop.net import get_json, post_bytes, post_file, post_json, stream_lines
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -38,6 +38,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/conflict":
             self._send(409, "application/json", json.dumps(
                 {"error": {"code": "already_decided", "message": "x"}}))
+        elif self.path == "/wav":
+            self._send(200, "audio/wav", "RIFFxxxxWAVE")
+        elif self.path == "/voice-down":
+            self._send(503, "application/json", json.dumps(
+                {"error": {"code": "voice_unavailable", "message": "no tts"}}))
         elif self.path == "/teapot":
             self._send(500, "text/plain", "boom")
         elif self.path == "/upload":
@@ -161,3 +166,22 @@ def test_nothing_raises_on_a_refused_port(tmp_path):
     assert "error" in post_json(url + "/a", {}, 1.0)
     assert "error" in post_file(url + "/a", f, {}, 1.0)
     assert "error" in stream_lines(url + "/a", {}, lambda s: None, lambda: False)
+
+
+def test_post_bytes_returns_the_raw_audio(server):
+    assert post_bytes(server + "/wav", {"text": "hi"}, 5.0) == {"wav": b"RIFFxxxxWAVE"}
+
+
+def test_post_bytes_keeps_an_error_envelope(server):
+    assert post_bytes(server + "/voice-down", {}, 5.0) == {
+        "error": {"code": "voice_unavailable", "message": "no tts"}, "status": 503}
+
+
+def test_post_bytes_refuses_json_as_audio(server):
+    body = post_bytes(server + "/echo", {"a": 1}, 5.0)
+    assert body["error"] == "HTTP 200: JSON, not audio" and "wav" not in body
+
+
+def test_post_bytes_unreachable_is_an_error():
+    body = post_bytes(f"http://127.0.0.1:{_closed_port()}/v1/voice/speak", {}, 1.0)
+    assert set(body) == {"error"}

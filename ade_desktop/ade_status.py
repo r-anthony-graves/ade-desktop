@@ -79,6 +79,26 @@ def health_pill(payload) -> tuple[str, str, str]:
     return ("UNKNOWN", "off", _trim(payload))
 
 
+def is_active(payload) -> bool | None:
+    """/v1/activity's answer: True if Ade has work in flight, False if it
+    says it has none, None if it could not say (an error is not "idle")."""
+    if not isinstance(payload, dict) or "error" in payload:
+        return None
+    active, count = payload.get("active"), payload.get("count")
+    if active is None and count is None:
+        return None
+    try:
+        return bool(active) or int(count or 0) > 0
+    except (TypeError, ValueError):
+        return bool(active)
+
+
+def is_online(payload) -> bool:
+    """The orb's online: Ade OS answered /v1/health at all. BLOCKED and
+    DEGRADED are reachable; DOWN and UNKNOWN are not."""
+    return health_pill(payload)[0] in ("UP", "DEGRADED", "BLOCKED")
+
+
 def brain_name(payload) -> str:
     """resolved.brain from /v1/settings -- the one field that NAMES the
     brain. Never derived from `mode`: LM Studio and DeepSeek share
@@ -95,7 +115,8 @@ def brain_name(payload) -> str:
 
 
 class AdeStatusClient(QObject):
-    """Polls /v1/health (5 s) and /v1/settings (30 s) off the UI thread.
+    """Polls /v1/health (5 s), /v1/settings (30 s) and /v1/activity (2 s,
+    the orb's "is Ade working" -- a cheap GET) off the UI thread.
 
     A signal emitted from a worker thread to an object on the GUI thread is
     queued by Qt -- the trader's JsonPoller uses the same model. A poll still
@@ -104,15 +125,16 @@ class AdeStatusClient(QObject):
 
     health = Signal(dict)
     settings = Signal(dict)
+    activity = Signal(dict)
 
     def __init__(self, base: str | None = None, *, health_ms: int = 5000,
-                 settings_ms: int = 30000,
+                 settings_ms: int = 30000, activity_ms: int = 2000,
                  fetch: Callable[[str], dict] = get_json,
                  parent=None) -> None:
         super().__init__(parent)
         self.base = (base or ade_base()).rstrip("/")
         self._fetch = fetch
-        self._pool = ThreadPoolExecutor(max_workers=2,
+        self._pool = ThreadPoolExecutor(max_workers=3,
                                         thread_name_prefix="ade-status")
         self._inflight: set[str] = set()
         self._lock = threading.Lock()
@@ -123,12 +145,17 @@ class AdeStatusClient(QObject):
         self._settings_timer = QTimer(self)
         self._settings_timer.setInterval(settings_ms)
         self._settings_timer.timeout.connect(self.poll_settings)
+        self._activity_timer = QTimer(self)
+        self._activity_timer.setInterval(activity_ms)
+        self._activity_timer.timeout.connect(self.poll_activity)
 
     def start(self) -> None:
         self._health_timer.start()
         self._settings_timer.start()
+        self._activity_timer.start()
         self.poll_health()
         self.poll_settings()
+        self.poll_activity()
 
     def stop(self) -> None:
         """Stop polling for good, and wait for a poll in flight -- at most
@@ -138,6 +165,7 @@ class AdeStatusClient(QObject):
         self._stopped = True
         self._health_timer.stop()
         self._settings_timer.stop()
+        self._activity_timer.stop()
         self._pool.shutdown(wait=True, cancel_futures=True)
 
     def poll_health(self) -> None:
@@ -145,6 +173,9 @@ class AdeStatusClient(QObject):
 
     def poll_settings(self) -> None:
         self._poll("settings", "/v1/settings", self.settings)
+
+    def poll_activity(self) -> None:
+        self._poll("activity", "/v1/activity", self.activity)
 
     def _poll(self, key: str, path: str, signal) -> None:
         with self._lock:

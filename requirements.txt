@@ -9,3 +9,7 @@
 PySide6-Essentials==6.11.1
 httpx==0.28.1
 pytest==9.1.1
+# The orb's microphone (piece 3). PortAudio ships inside the wheel; Qt's own
+# audio (QtMultimedia) lives in PySide6-Addons with QtWebEngine, which the
+# no-browser-engine rule above keeps out. RawInputStream needs no numpy.
+sounddevice==0.5.2

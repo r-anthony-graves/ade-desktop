@@ -5,7 +5,7 @@ cannot say whether tools may run must not be read as "yes" or "no"."""
 import threading
 
 from ade_desktop.ade_status import (
-    AdeStatusClient, ade_base, brain_name, health_pill,
+    AdeStatusClient, ade_base, brain_name, health_pill, is_active, is_online,
 )
 
 UP = {"status": "up", "may_execute_tools": True, "blocking_reason": "",
@@ -169,3 +169,32 @@ def test_a_slow_poll_is_not_stacked(qapp, pump):
     release.set()
     assert pump(lambda: bool(got))
     assert calls == ["http://ade/v1/health"]
+
+
+def test_the_client_also_polls_activity(qapp, pump):
+    got = []
+    client = AdeStatusClient("http://ade", fetch=lambda url: {"url": url})
+    client.activity.connect(got.append)
+    client.start()
+    try:
+        assert pump(lambda: bool(got))
+    finally:
+        client.stop()
+    assert got[0] == {"url": "http://ade/v1/activity"}
+
+
+def test_activity_reads_active_or_a_count_and_an_error_is_not_idle():
+    assert is_active({"active": False, "count": 0, "topics": []}) is False
+    assert is_active({"active": True, "count": 0}) is True
+    assert is_active({"active": False, "count": 2}) is True
+    assert is_active({"error": "ConnectError"}) is None
+    assert is_active({}) is None
+    assert is_active("nope") is None
+
+
+def test_online_is_reachable_not_healthy():
+    assert is_online(UP) is True
+    assert is_online({"status": "down", "may_execute_tools": False,
+                      "blocking_reason": "x"}) is True
+    assert is_online({"error": "ConnectError: refused"}) is False
+    assert is_online("garbage") is False

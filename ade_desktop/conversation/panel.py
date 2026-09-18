@@ -82,6 +82,11 @@ class HistoryLineEdit(QLineEdit):
 
 class ConversationPanel(QWidget):
     approval_needed = Signal(str)   # the tool: the window raises itself
+    # For the orb (piece 3): what Ade is doing, as the panel sees it.
+    busy_changed = Signal(bool)      # a turn started / ended
+    reply_landed = Signal(str)       # an ask / chat / task answer shown in Chat
+    turn_failed = Signal()           # a turn ended in "Call failed"
+    approval_decided = Signal(bool)  # Ade OS accepted Allow (True) / Deny
 
     def __init__(self, client, watcher, store, parent=None) -> None:
         super().__init__(parent)
@@ -409,6 +414,7 @@ class ConversationPanel(QWidget):
 
     def _start_turn(self, rid, kind, tab, raw) -> None:
         self.busy = True
+        self.busy_changed.emit(True)
         self._turn = {"rid": rid, "kind": kind, "tab": tab, "raw": raw,
                       "t0": time.monotonic(), "stopped": False}
         self.working_label.setText("Working… 0 s")
@@ -423,12 +429,14 @@ class ConversationPanel(QWidget):
     def _end_turn(self) -> dict:
         turn, self._turn = self._turn, None
         self.busy = False
+        self.busy_changed.emit(False)
         self._tick.stop()
         self.working_label.hide()
         self.stop_button.hide()
         return turn
 
     def _fail(self, turn, cause: str) -> None:
+        self.turn_failed.emit()
         raw = turn.get("raw") or ""
         draft = self.input.text().strip()
         if draft and draft != raw.strip():
@@ -534,8 +542,12 @@ class ConversationPanel(QWidget):
                 self._push("chat", "system", "text", note)
                 return
             self._push("chat", "ade", "ask", reply.text)
+            self.reply_landed.emit(reply.text)
             return
-        self._push(tab, "ade", kind, read_reply(result) or "(no output)")
+        text = read_reply(result) or "(no output)"
+        self._push(tab, "ade", kind, text)
+        if kind in ("chat", "task") and tab == "chat":
+            self.reply_landed.emit(text)
 
     # -- pending, non-turn calls --------------------------------------------
 
@@ -631,6 +643,7 @@ class ConversationPanel(QWidget):
         err = result.get("error") if isinstance(result, dict) else "no reply"
         if err is None:
             meta["decided"] = f"{'Allowed' if allow else 'Denied'} {approval_id}"
+            self.approval_decided.emit(bool(allow))
         elif isinstance(err, dict) and err.get("code") == "already_decided":
             meta["decided"] = "Already decided elsewhere"
         else:
@@ -652,6 +665,45 @@ class ConversationPanel(QWidget):
             meta["moot"] = True
             self._refresh(msg)
             self._save_soon()
+
+    # -- speech (piece 3) -----------------------------------------------------
+
+    def note(self, text: str) -> None:
+        """A system line in Chat."""
+        self._push("chat", "system", "text", text)
+
+    def focus_input(self) -> None:
+        self.input.setFocus()
+
+    def stage(self, text: str, note: str | None = None, *, quiet: bool = False) -> bool:
+        """Put `text` in the input for Enter, unsent. A draft already in the
+        box is never overwritten: the note says what was heard instead --
+        unless `quiet` (plain dictation, which an always-open microphone
+        hears all day: a note per overheard sentence would bury the chat)."""
+        draft = self.input.text().strip()
+        if draft and draft != text.strip():
+            if not quiet:
+                self.set_tab("chat")
+                self._push("chat", "system", "staged",
+                           f"Heard: {text} (not placed: your draft in the box was kept).")
+            return False
+        self.set_tab("chat")
+        if note:
+            self._push("chat", "system", "staged", note)
+        self.input.setText(text)
+        self.input.setFocus()
+        return True
+
+    def voice_ask(self, text: str) -> bool:
+        """Speech's ONLY way to send anything: a read-only ask, on Chat,
+        routed as Chat routes it -- never on Shell, whatever tab is open.
+        Anything that routes elsewhere, or a busy panel, is refused here and
+        the caller stages it. The input box is not touched."""
+        r = route(text, "chat", COMMAND_NAMES)
+        if r.kind != "ask" or self.busy:
+            return False
+        self._route_ask(r, text, "chat")
+        return True
 
     # -- drag and drop, quit ------------------------------------------------
 
