@@ -99,12 +99,22 @@ class SingleInstance(QObject):
             self._server.close()
 
     def _on_connection(self) -> None:
+        # NO lambda capturing the socket and self (found 2026-09-18 by a
+        # full-suite abort): the connection held them both, so the socket's
+        # own deleteLater dropped the LAST reference to this object -- whose
+        # server then deleted that same socket, mid-destruction, a second
+        # time. A connection to our own method captures nothing.
         while self._server is not None and self._server.hasPendingConnections():
             conn = self._server.nextPendingConnection()
-            conn.readyRead.connect(lambda c=conn: self._read(c))
+            conn.readyRead.connect(self._on_ready_read)
             conn.disconnected.connect(conn.deleteLater)
             if conn.bytesAvailable():
                 self._read(conn)
+
+    def _on_ready_read(self) -> None:
+        conn = self.sender()
+        if isinstance(conn, QLocalSocket):
+            self._read(conn)
 
     def _read(self, conn: QLocalSocket) -> None:
         if b"show" in bytes(conn.readAll()):

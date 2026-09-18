@@ -75,3 +75,39 @@ def test_a_second_process_hands_show_to_the_first(qapp, pump):
         first.close()
     assert proc.returncode == 0
     assert shown == [True]
+
+
+def test_a_served_connection_does_not_keep_the_instance_alive(qapp, pump):
+    """The socket's readyRead once held a lambda capturing the socket AND
+    this object, so its deleteLater dropped the last reference mid-teardown
+    and the server deleted the socket twice: a full-suite abort
+    (2026-09-18). Served, closed and dropped, it must be freed at once."""
+    import gc
+    import weakref
+
+    name = _unique()
+    first = SingleInstance(name)
+    assert first.listen()
+    shown = []
+    first.show_requested.connect(lambda: shown.append(True))
+    code = (
+        "import os, sys; os.environ['QT_QPA_PLATFORM']='offscreen';"
+        "from PySide6.QtCore import QCoreApplication;"
+        "app = QCoreApplication([]);"
+        "from ade_desktop.single_instance import SingleInstance;"
+        f"sys.exit(0 if SingleInstance({name!r}).notify_running() else 3)"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], cwd=str(REPO))
+    try:
+        assert pump(lambda: bool(shown) and proc.poll() is not None, timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    first.close()
+    ref = weakref.ref(first)
+    gc.disable()
+    try:
+        del first
+        assert ref() is None
+    finally:
+        gc.enable()

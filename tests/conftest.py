@@ -59,3 +59,17 @@ def isolated_trader_imports():
         del sys.modules[key]
     sys.modules.update(saved)
     sys.path[:] = saved_path
+
+
+@pytest.fixture(autouse=True)
+def _deferred_deletes_run_in_their_own_test(request):
+    """Run each test's deleteLater()s at ITS teardown. Left queued, they ran
+    at the next test that happened to pump events -- the orb's voice tests,
+    last in the order -- and a crash in a deletion named the wrong test
+    (2026-09-18: a SingleInstance socket deleted twice aborted the suite
+    inside test_voice_controller)."""
+    yield
+    if "qapp" in request.fixturenames:
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
