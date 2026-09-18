@@ -23,20 +23,21 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLis
                                QListWidgetItem, QPlainTextEdit, QPushButton, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ade_desktop.conversation.replies import error_cause, read_reply
+from ade_desktop.conversation.replies import error_cause, failed, task_report, task_types_from
 from ade_desktop.sections.pm import model as pm_model
 from ade_desktop.sections.pm.add_flow import AddProjectFlow
 from ade_desktop.sections.pm.panel import ERROR_STYLE, MUTED_STYLE, TEXT_FILTER
 from ade_desktop.sections.qa import model
 from ade_desktop.workspace.editor import FileEditor
 from ade_desktop.workspace.files import is_missing
+from ade_desktop.workspace.filling import WRITING_NOTE, filling
 
 STALE_S = 5.0
 NO_PROJECT = "No project is selected. Pick one in PM — the QA desk follows it."
 
 
 def _ok(result) -> bool:
-    return isinstance(result, dict) and "error" not in result
+    return not failed(result)
 
 
 def _muted(text: str = "") -> QLabel:
@@ -89,7 +90,13 @@ class ArtifactView(QWidget):
             self._apply(self._loaded_ok)
             return
         if self.editor.path != path and not self.editor.open(path):
-            return                                  # the user kept unsaved edits
+            # The user kept unsaved edits elsewhere: say so, and keep that
+            # file in view rather than a board for a section it is not.
+            self.board.hide()
+            self.editor.show()
+            self.missing.setText(f"Still editing {self.editor.path}: save or revert it "
+                                 f"to open {path}.")
+            return
         if self.editor.path == path and self.path != path:
             self.editor.revert()                    # the same file, asked for anew
         self.path, self._loaded_ok = path, None
@@ -106,12 +113,32 @@ class ArtifactView(QWidget):
         self._apply(ok)
 
     def _apply(self, ok: bool) -> None:
-        self.editor.setVisible(ok)
-        self.board.setVisible(not ok)
-        if not ok:
+        # Only a document that is not THERE shows the board. A timeout, a
+        # refusal or an unreachable Ade OS shows the editor with its reason:
+        # "missing" there would invite regenerating over a file that exists.
+        absent = not ok and self.editor.missing
+        self.editor.setVisible(not absent)
+        self.board.setVisible(absent)
+        if absent:
             file = (self.path or "").rsplit("/", 1)[-1]
             self.missing.setText(f"No {file} for “{self._label}” yet ({self.path}).")
         self.again.setVisible(not ok)
+
+    def reread(self) -> None:
+        """After Ade wrote the package: read the document again, unless the
+        user has edits in it (those are never replaced silently)."""
+        if not self.path or self.editor.path != self.path:
+            return
+        if self.editor.is_dirty():
+            self.missing.setText(f"Ade rewrote this package; {self.path} has your unsaved "
+                                 "edits, so it was not reloaded. Revert to see Ade's version.")
+            return
+        self._loaded_ok = None
+        self.editor.revert()
+
+    def sync_block(self) -> None:
+        folder = filling().folder_of(self.editor.path)
+        self.editor.block_reason = WRITING_NOTE if folder else ""
 
 
 class QaPanel(QWidget):
@@ -128,6 +155,8 @@ class QaPanel(QWidget):
         self.projects: list[dict] = []
         self.types: list[str] = list(model.FALLBACK_TYPES)
         self.flow = AddProjectFlow(pm, files, parent=self)
+        self._stale = False
+        self._dispatching = False
         self._build(confirm)
         qa.done.connect(self._on_done)
         files.done.connect(self._on_done)
@@ -137,6 +166,7 @@ class QaPanel(QWidget):
         self.flow.status.connect(self.gen_status.setText)
         self.flow.failed.connect(self.gen_error.setText)
         self.flow.busy_changed.connect(self._on_gen_busy)
+        filling().changed.connect(self._on_filling)
 
     # -- layout -----------------------------------------------------------------
 
@@ -302,6 +332,8 @@ class QaPanel(QWidget):
 
     def unsaved(self) -> list[str]:
         lost = []
+        if self._dispatching:
+            lost.append("a QA task still running (it keeps running in Ade OS)")
         for view in (self.artifact, self.req_artifact):
             if view.editor.is_dirty():
                 lost.append(f"unsaved changes to {view.editor.path}")
@@ -315,6 +347,13 @@ class QaPanel(QWidget):
         super().showEvent(event)
         if self._clock() - self._last_refresh > STALE_S:
             self.refresh()
+        elif self._stale:
+            self._stale = False
+            self._render_section()
+
+    def _on_filling(self) -> None:
+        for view in (self.artifact, self.req_artifact):
+            view.sync_block()
 
     def refresh(self) -> None:
         self._last_refresh = self._clock()
@@ -369,9 +408,15 @@ class QaPanel(QWidget):
             self.project_label.setText(f"{name} — {pm_model.format_status(match.get('status'))}")
         else:
             self.project_label.setText(name)
-        self.gen_target.setText(
-            f"Writes the 13 QA documents into qa/{self._slug()}/ for “{name}”, one at a "
-            "time, then checks them on disk." if name else NO_PROJECT)
+        running = self.flow.intake if self.flow.busy else None
+        if running and running.get("slug") != self._slug():
+            self.gen_target.setText(
+                f"Still writing into {running['qa_dir']}/ for “{running['project']['name']}”"
+                " — the run started before you switched projects.")
+        else:
+            self.gen_target.setText(
+                f"Writes the 13 QA documents into qa/{self._slug()}/ for “{name}”, one at a "
+                "time, then checks them on disk." if name else NO_PROJECT)
         self.gen_run.setEnabled(bool(name) and not self.flow.busy)
 
     def _current_id(self) -> str:
@@ -382,7 +427,18 @@ class QaPanel(QWidget):
         self._render_section()
 
     def _on_active_changed(self, name: str) -> None:
+        # A run for the previous project keeps writing where it started;
+        # its Re-run belongs to that project, not this one (review).
+        if not self.flow.busy:
+            self.gen_rerun.hide()
+            self.gen_line.setText("QA package: —")
+            self.gen_status.setText("")
         self._render_header()
+        if not self.isVisible():
+            # Re-rendered when shown: a hidden panel must not raise a
+            # discard dialog because PM picked another project.
+            self._stale = True
+            return
         self._render_section()
 
     def _render_section(self) -> None:
@@ -422,6 +478,7 @@ class QaPanel(QWidget):
         missing_dir = is_missing(result)
         if not _ok(result) and not missing_dir:
             self.package_note.setText(f"Could not read qa/{slug}/: {error_cause(result)}")
+            self.package_table.setRowCount(0)      # not the last project's rows
             return
         names = {e.get("name") for e in (result.get("entries") or []) if e.get("kind") == "file"} \
             if _ok(result) else set()
@@ -468,6 +525,11 @@ class QaPanel(QWidget):
                            self.gen_notes.toPlainText())
 
     def _on_gen_rerun(self) -> None:
+        intake = self.flow.intake or {}
+        if intake.get("slug") != self._slug():
+            self.gen_rerun.hide()
+            self.gen_error.setText("That run was for another project; Generate writes this one's.")
+            return
         self.gen_rerun.hide()
         self.flow.rerun("qa")
 
@@ -488,7 +550,10 @@ class QaPanel(QWidget):
         self.gen_paste.setEnabled(not busy and self.gen_file is None)
         self.gen_run.setEnabled(not busy and bool(self.active.name))
         if not busy:
-            self._render_section()          # the disk, not the flow's summary
+            # The disk, not the flow's summary: whatever is open is read again.
+            for view in (self.artifact, self.req_artifact):
+                view.reread()
+            self._render_section()
 
     # -- execution ----------------------------------------------------------------------
 
@@ -499,16 +564,27 @@ class QaPanel(QWidget):
         task_type = self.exec_type.currentText()
         self.exec_run.setEnabled(False)
         self.exec_run.setText("Running…")
+        self._dispatching = True
         self.exec_result.setPlainText(f"Dispatched {task_type} to Ade's QA agents — a task "
                                       "takes minutes; an approval it needs appears in the "
                                       "Ade panel.")
-        self._pending[self.qa.dispatch(task_type, text)] = ("dispatch", task_type)
+        self._pending[self.qa.dispatch(task_type, text, self.active.name)] = \
+            ("dispatch", task_type)
 
     def _got_dispatch(self, result, task_type: str) -> None:
+        self._dispatching = False
         self.exec_run.setEnabled(True)
         self.exec_run.setText("Run QA task")
-        if not _ok(result):
-            self.exec_result.setPlainText(f"{task_type} failed: {error_cause(result)}")
-            return
-        self.exec_result.setPlainText(read_reply(result) or "(no output)")
+        if isinstance(result, dict) and "task_id" in result and "status" not in result:
+            text, _ = task_report(result)               # the task RAN, well or not
+            self.exec_result.setPlainText(text or "(no output)")
+        elif isinstance(result, dict) and "Timeout" in str(result.get("error", "")):
+            self.exec_result.setPlainText(
+                f"No answer in 20 minutes. The {task_type} task may still be running in "
+                "Ade OS — check Ade's activity before sending it again.")
+        else:
+            cause = error_cause(result)
+            types = task_types_from(result)
+            self.exec_result.setPlainText(f"{task_type} failed: {cause}"
+                                          + ("\n\nTypes: " + ", ".join(types) if types else ""))
         self._pending[self.qa.activity()] = ("activity",)

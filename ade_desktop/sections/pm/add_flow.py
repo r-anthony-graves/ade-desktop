@@ -24,8 +24,10 @@ import tempfile
 
 from PySide6.QtCore import QObject, Signal
 
-from ade_desktop.conversation.replies import error_cause
+from ade_desktop.conversation.replies import error_cause, failed
 from ade_desktop.sections.pm import model
+from ade_desktop.workspace.files import is_missing
+from ade_desktop.workspace.filling import filling
 
 
 class AddProjectFlow(QObject):
@@ -128,13 +130,24 @@ class AddProjectFlow(QObject):
             self._pasted_dir = None
 
     def close(self) -> None:
-        """At quit: nothing more is started, and the staged file goes."""
+        """At quit, or when the panel goes: nothing more is started, the
+        staged file goes, and the folder is no longer marked as written."""
         self._stop = True
+        self._set_package_dir(None)
         self._cleanup()
+
+    def _set_package_dir(self, folder: str | None) -> None:
+        """Marked app-wide while Ade writes it, so no editor anywhere saves
+        a document in it meanwhile."""
+        if self.package_dir:
+            filling().clear(self.package_dir)
+        self.package_dir = folder
+        if folder:
+            filling().mark(folder)
 
     def _finish(self) -> None:
         self._run = None
-        self.package_dir = None
+        self._set_package_dir(None)
         self._cleanup()
         self._set_busy(False)
 
@@ -145,7 +158,7 @@ class AddProjectFlow(QObject):
         docs = (model.pm_docs(intake.get("artifacts") or []) if pkg == "pm"
                 else list(model.QA_DOCS))
         self._run = {"pkg": pkg, "docs": docs, "i": 0, "failures": []}
-        self.package_dir = intake["dir"] if pkg == "pm" else intake["qa_dir"]
+        self._set_package_dir(intake["dir"] if pkg == "pm" else intake["qa_dir"])
         self.package.emit(pkg, "running", "")
         self._next_doc()
 
@@ -225,7 +238,7 @@ class AddProjectFlow(QObject):
         job = self._pending.pop(rid, None)
         if job is None:
             return
-        ok = isinstance(result, dict) and "error" not in result
+        ok = not failed(result)
         kind = job[0]
         if kind == "upload":
             if not ok or not result.get("name"):
@@ -282,12 +295,15 @@ class AddProjectFlow(QObject):
             if run["checked"] == len(run["verify"]):
                 self._verified_pm()
         elif kind == "verify_qa":
-            if not ok:
+            if not ok and not is_missing(result):
                 self.package.emit("qa", "error", f"QA disk check failed: {error_cause(result)}")
             else:
-                files = [e for e in result.get("entries") or [] if e.get("kind") == "file"]
-                qa_kind, note = model.grade_qa(len(files), len(model.QA_DOCS),
-                                               self.intake["qa_dir"])
+                # The 13 documents only: author_doc writes README.md itself,
+                # so counting it graded one file on disk as a whole package.
+                names = {e.get("name") for e in (result.get("entries") or [])
+                         if e.get("kind") == "file"} if ok else set()
+                qa_kind, note = model.grade_qa(len(names & set(model.QA_DOCS)),
+                                               len(model.QA_DOCS), self.intake["qa_dir"])
                 self.package.emit("qa", qa_kind, note)
             self._after_package("qa")
 

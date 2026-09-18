@@ -82,3 +82,16 @@ def test_health_text():
     assert health_text({"error": "ConnectError: refused"}) == (
         "Ade OS did not answer /v1/health - ConnectError: refused. "
         "That IS the health answer: the API is unreachable.")
+
+
+def test_failed_means_a_truthy_error_not_the_key():
+    """/v1/tasks always carries `error`: null (mission) or "" (fast path)
+    on success. The key's presence is not failure (piece-5 review)."""
+    from ade_desktop.conversation.replies import failed
+
+    assert failed({"error": None, "ok": True}) is False
+    assert failed({"error": "", "ok": True}) is False
+    assert failed({"answer": "hi"}) is False
+    assert failed({"error": "ConnectError: refused"}) is True
+    assert failed({"error": {"code": "x", "message": "y"}, "status": 400}) is True
+    assert failed(None) is True and failed("text") is True

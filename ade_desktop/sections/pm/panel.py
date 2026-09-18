@@ -19,11 +19,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDia
                                QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
-from ade_desktop.conversation.replies import error_cause
+from ade_desktop.conversation.replies import error_cause, failed
 from ade_desktop.sections.pm import model
 from ade_desktop.sections.pm.add_flow import AddProjectFlow
 from ade_desktop.workspace.editor import FileEditor
 from ade_desktop.workspace.files import is_missing
+from ade_desktop.workspace.filling import WRITING_NOTE, filling
 
 ERROR_STYLE = "color:#d95757;"
 MUTED_STYLE = "color:#9aa1ab;"
@@ -33,7 +34,7 @@ STALE_S = 5.0
 
 
 def _ok(result) -> bool:
-    return isinstance(result, dict) and "error" not in result
+    return not failed(result)
 
 
 def _table(headers) -> QTableWidget:
@@ -294,6 +295,7 @@ class PmPanel(QWidget):
         self.flow.created.connect(self._on_created)
         self.flow.busy_changed.connect(self._on_flow_busy)
         self.flow.package.connect(self._on_flow_package)
+        filling().changed.connect(self._label_groups)
 
     def _build_overview(self) -> QWidget:
         w = QWidget()
@@ -594,17 +596,15 @@ class PmPanel(QWidget):
 
     def _label_groups(self) -> None:
         if self.selected is None:
+            self.editor.block_reason = WRITING_NOTE if filling().folder_of(self.editor.path) else ""
             return
         s = model.slug(self.selected["name"])
-        writing = self.flow.package_dir
         for label, title, d in ((self.pm_label, "PM artifacts", f"pm/{s}"),
                                 (self.qa_label, "QA package", f"qa/{s}")):
-            label.setText(f"{title}   {d}/" + ("   filling…" if writing == d else ""))
-        # A document Ade is about to rewrite must not be saved over meanwhile.
-        path = self.editor.path or ""
-        self.editor.block_reason = (
-            "Ade is writing this package right now; save after it finishes."
-            if writing and path.startswith(writing + "/") else "")
+            label.setText(f"{title}   {d}/" + ("   filling…" if filling().is_filling(d) else ""))
+        # A document Ade is about to rewrite must not be saved over meanwhile
+        # -- whichever panel's run is writing it.
+        self.editor.block_reason = WRITING_NOTE if filling().folder_of(self.editor.path) else ""
 
     def _got_listing(self, result, which: str, slug: str) -> None:
         if self.selected is None or model.slug(self.selected["name"]) != slug:

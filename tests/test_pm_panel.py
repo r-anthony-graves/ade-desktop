@@ -329,14 +329,15 @@ def test_the_status_combo_is_not_an_optimistic_copy(rig):
 
 
 def test_while_ade_writes_a_package_its_documents_cannot_be_saved(rig):
+    from ade_desktop.workspace.filling import filling
     panel, pm, files, _ = rig
-    panel.flow.package_dir = "pm/fuel-management"
     panel.editor.open("pm/fuel-management/charter.md")
-    panel._label_groups()
-    assert "filling…" in panel.pm_label.text()
-    assert panel.editor.block_reason.startswith("Ade is writing this package")
-    panel.flow.package_dir = None
-    panel._label_groups()
+    filling().mark("pm/fuel-management")          # any flow, this panel's or QA's
+    try:
+        assert "filling…" in panel.pm_label.text()
+        assert panel.editor.block_reason.startswith("Ade is writing this package")
+    finally:
+        filling().clear("pm/fuel-management")
     assert panel.editor.block_reason == "" and "filling" not in panel.pm_label.text()
 
 

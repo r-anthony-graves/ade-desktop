@@ -369,3 +369,29 @@ def test_a_dropped_panel_is_freed_at_once(qapp, tmp_path):
         assert ref() is None, "the panel survived its last reference"
     finally:
         gc.enable()
+
+
+
+def test_a_real_task_reply_is_not_a_failure(qapp, tmp_path):
+    """Ade OS's /v1/tasks reply ALWAYS carries `error` -- null on success.
+    Reading the key's presence as failure made every /type task a
+    "Call failed" (found by the piece-5 review)."""
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("/test run the unit tests")
+    client.done.emit("r1", {"task_id": "t-1", "ok": True, "summary": "All 40 passed.",
+                            "artifacts": [], "tool_calls": 3, "error": None,
+                            "mission_id": "m", "state": "complete", "progress": 1.0,
+                            "confidence": 0.95, "degraded": False})
+    msgs = panel.view_messages("chat")
+    assert msgs[-1]["kind"] == "task" and msgs[-1]["text"] == "All 40 passed."
+    assert not any("Call failed" in (m.get("text") or "") for m in msgs)
+
+
+def test_a_task_that_ran_and_failed_says_so_without_restaging(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("/test run the unit tests")
+    client.done.emit("r1", {"task_id": "t-2", "ok": False, "summary": "stopped early",
+                            "error": "max rounds", "degraded": True})
+    msg = panel.view_messages("chat")[-1]
+    assert msg["kind"] == "error" and "did not succeed: max rounds" in msg["text"]
+    assert panel.input.text() == ""

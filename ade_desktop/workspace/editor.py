@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
                                QPushButton, QVBoxLayout, QWidget)
 
 from ade_desktop.conversation.replies import error_cause
+from ade_desktop.workspace.files import is_missing
 
 BOM = "\ufeff"
 CACHED_NOTE = ("This is Ade's index copy, not the file on disk, so editing is off: "
@@ -70,6 +71,7 @@ class FileEditor(QWidget):
         self.baseline: str | None = None
         self.readonly_reason = ""
         self.block_reason = ""          # set by the owner: e.g. Ade is writing this package
+        self.missing = False            # the last open found nothing at the path
         self._bom = False
         self._ticket = 0
         self._saving = False
@@ -218,6 +220,7 @@ class FileEditor(QWidget):
         self.note.setText(reason)
 
     def _opened(self, result) -> None:
+        self.missing = is_missing(result)
         if not isinstance(result, dict) or "error" in result:
             self.baseline = ""
             self._refuse(_why_not(result))

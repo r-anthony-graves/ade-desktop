@@ -73,3 +73,15 @@ def _deferred_deletes_run_in_their_own_test(request):
         from PySide6.QtCore import QCoreApplication, QEvent
 
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+
+
+@pytest.fixture(autouse=True)
+def _fresh_filling_registry():
+    """The "being written" registry is process-wide by design (one answer
+    for the app); a test's unfinished flow must not leave marks for the
+    next test to trip over."""
+    yield
+    from ade_desktop.workspace import filling as registry
+
+    registry._FILLING = None

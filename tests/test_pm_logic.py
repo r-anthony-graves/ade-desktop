@@ -228,7 +228,8 @@ def test_the_whole_flow_in_order(qapp, tmp_path):
     qa = [c[2] for c in d.pm.calls if c[0] == "author" and c[1] == "qa"]
     assert qa == list(model.QA_DOCS)
     assert d.files.calls[-1] == ("list", "qa/fuel")
-    d.fs_answer({"entries": [{"kind": "file"}] * 13})
+    d.fs_answer({"entries": [{"name": n, "kind": "file"} for n in model.QA_DOCS]
+                 + [{"name": "README.md", "kind": "file"}]})
     assert d.kinds()[1][:3] == ("package", "qa", "ok")
     assert not d.flow.busy
 
@@ -375,3 +376,47 @@ def test_the_package_being_written_is_named_while_it_is(qapp, tmp_path):
     d.fs_answer({"text": "Fill status: filled"}, n=n - 1)
     d.fs_answer({"text": "Fill status: filled"}, n=n)
     assert d.flow.package_dir == "qa/fuel"
+
+
+
+def _to_qa_check(d):
+    d.through_intake()
+    d.author_all()
+    n = len(d.files.calls)
+    d.fs_answer({"text": "Fill status: filled"}, n=n - 1)
+    d.fs_answer({"text": "Fill status: filled"}, n=n)
+    d.author_all()
+
+
+def test_the_readme_alone_is_not_a_qa_package(qapp, tmp_path):
+    """author_doc writes README.md itself: one file on disk graded as
+    13/13 (review, 2026-09-18)."""
+    d = Driver(tmp_path)
+    _to_qa_check(d)
+    d.fs_answer({"entries": [{"name": "README.md", "kind": "file"}]})
+    assert d.kinds()[-1][2] == "stale"
+
+
+def test_a_qa_folder_that_is_not_there_is_stale_not_a_failed_check(qapp, tmp_path):
+    d = Driver(tmp_path)
+    _to_qa_check(d)
+    d.fs_answer({"error": {"code": "not_found", "message": "no directory at that path"}})
+    assert d.kinds()[-1][2] == "stale"
+
+
+def test_the_folder_being_written_is_marked_app_wide(qapp, tmp_path):
+    from ade_desktop.workspace.filling import filling
+    d = Driver(tmp_path)
+    d.through_intake()
+    assert filling().is_filling("pm/fuel")
+    d.flow.stop()
+    d.pm_answer({"doc": "charter.md"})
+    assert not filling().is_filling("pm/fuel") and not filling().is_filling("qa/fuel")
+
+
+def test_a_closed_flow_leaves_no_mark(qapp, tmp_path):
+    from ade_desktop.workspace.filling import filling
+    d = Driver(tmp_path)
+    d.through_intake()
+    d.flow.close()                                    # the panel went away mid-run
+    assert not filling().is_filling("pm/fuel")

@@ -30,7 +30,13 @@ class QaClient(AsyncClient):
     def projects(self) -> str:
         return self._read("/v1/pm/projects")
 
-    def dispatch(self, task_type: str, description: str) -> str:
+    def dispatch(self, task_type: str, description: str, project: str = "") -> str:
+        """Named to the qa primary (NewTask.agent) with the project it is
+        for (NewTask.project): unnamed, Ade OS's fast path can answer a
+        question-shaped request with no tools (review, 2026-09-18)."""
         request, url = self._request, self.base + "/v1/tasks"
-        body = {"task_type": task_type, "description": description, "topic": TOPIC}
+        body = {"task_type": task_type, "description": description, "topic": TOPIC,
+                "agent": "qa"}
+        if project:
+            body["project"] = project
         return self.call(lambda: request("POST", url, body, TASK_TIMEOUT))

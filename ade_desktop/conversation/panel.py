@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from ade_desktop.conversation.commands import BY_NAME, COMMAND_NAMES, help_text, run_local
 from ade_desktop.conversation.history import thread_history
 from ade_desktop.conversation.replies import (
-    ask_reply, error_cause, health_text, read_reply, task_types_from,
+    ask_reply, error_cause, failed, health_text, read_reply, task_report, task_types_from,
 )
 from ade_desktop.conversation.router import route
 from ade_desktop.conversation.skills import (
@@ -495,7 +495,7 @@ class ConversationPanel(QWidget):
             out = turn["out"]
             if turn["stopped"]:
                 out["text"] += ("\n" if out["text"] else "") + "[stopped]"
-            elif "error" in result:
+            elif failed(result):
                 if not out["text"]:
                     self.store.tab_messages("chat").remove(out)
                     self._render()
@@ -513,7 +513,7 @@ class ConversationPanel(QWidget):
             return
         if kind == "upload":
             plan = turn["plan"]
-            if "error" in result:
+            if failed(result):
                 self._push(tab, "ade", "error", f"Upload failed: {error_cause(result)}")
                 return
             text = report(result.get("sent", 0), result.get("bytes", 0), plan.found,
@@ -527,7 +527,16 @@ class ConversationPanel(QWidget):
             text = str(result.get("output") or "") or str(result.get("error") or "")
             self._push(tab, "ade", "shell", text or "(no output)")
             return
-        if "error" in result:
+        if kind == "task" and isinstance(result, dict) and "task_id" in result \
+                and "status" not in result:
+            # The task RAN: its reply is Ade's account of it, success or not.
+            text, _ = task_report(result)
+            bad = bool(result.get("error")) or result.get("ok") is False
+            self._push(tab, "ade", "error" if bad else "task", text)
+            if not bad:
+                self.reply_landed.emit(text)
+            return
+        if failed(result):
             types = task_types_from(result) if kind == "task" else []
             cause = error_cause(result)
             if types:
@@ -566,7 +575,7 @@ class ConversationPanel(QWidget):
                    "/superpowers for the process set.")
 
     def _done_kill(self, pending, result) -> None:
-        if isinstance(result, dict) and "error" in result:
+        if failed(result):
             self._push("chat", "system", "text",
                        f"Stop failed: {error_cause(result)}. The command may "
                        "still be running in the shell session.")

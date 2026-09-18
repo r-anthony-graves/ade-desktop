@@ -56,8 +56,12 @@ def test_dispatch_is_topic_qa(qapp, pump):
     c.dispatch("verify", "report only")
     assert pump(lambda: bool(calls))
     assert calls == [("POST", "http://ade/v1/tasks",
-                      {"task_type": "verify", "description": "report only", "topic": "qa"},
-                      1200.0)]
+                      {"task_type": "verify", "description": "report only", "topic": "qa",
+                       "agent": "qa"}, 1200.0)]
+    calls.clear()
+    c.dispatch("test", "x", "Fuel Management")
+    assert pump(lambda: bool(calls))
+    assert calls[0][2]["project"] == "Fuel Management"
 
 # ------------------------------------------------------------------ panel
 
@@ -84,7 +88,7 @@ class FakeQa(Fake):
     def projects(self): return self._rid("projects")
     def agents(self): return self._rid("agents")
     def activity(self): return self._rid("activity")
-    def dispatch(self, t, d): return self._rid("dispatch", t, d)
+    def dispatch(self, t, d, project=""): return self._rid("dispatch", t, d)
 
 
 class FakePm(Fake):
@@ -107,6 +111,7 @@ def rig(qapp, tmp_path):
     active.set("Fuel Management")
     panel = QaPanel(qa, pm, files, active, confirm=lambda q: True,
                     pick_file=lambda: "C:/docs/requirements-paste.md")
+    panel.show()                                  # as the app shows it
     panel.refresh()
     qa.answer_last("projects", {"projects": [{"id": 9, "name": "Fuel Management",
                                               "status": "ongoing"}]})
@@ -190,15 +195,19 @@ def test_generation_writes_into_the_active_project_never_the_file_s_slug(rig):
     files.answer_last("upload", {"name": "uploads/requirements-paste.md"})
     first = pm.calls[-1]
     assert first == ("author", "qa", "fuel-management", "requirements.md", "Fuel Management")
-    for _ in range(12):
-        pm.answer_last("author", {"ok": True})
-    pm.answer_last("author", {"ok": True})
+    for _ in range(13):
+        doc = pm.calls[-1][3]
+        pm.answer_last("author", {"package": "qa", "slug": "fuel-management", "doc": doc,
+                                  "path": f"qa/fuel-management/{doc}", "bytes": 900,
+                                  "gaps": 0})
     authored = [c for c in pm.calls if c[0] == "author"]
     assert len(authored) == 13 and {c[2] for c in authored} == {"fuel-management"}
     assert not any(c[0] == "intake" for c in pm.calls)      # no new project
     assert files.calls[-1] == ("list", "qa/fuel-management")
     files.answer_last("list", {"entries": [{"name": f, "kind": "file"}
                                            for f in pm_model.QA_DOCS]})
+    # the requirements document is read again from disk, not assumed
+    assert files.calls[-1] == ("read", "qa/fuel-management/requirements.md")
     assert panel.gen_line.text().startswith("QA package: 13/13 documents authored")
 
 
@@ -214,7 +223,12 @@ def test_execution_dispatches_the_chosen_type_and_shows_the_reply(rig):
     panel.exec_run.click()
     assert qa.calls[-1] == ("dispatch", "verify", "Report the failing web tests; change nothing.")
     assert not panel.exec_run.isEnabled()
-    qa.answer_last("dispatch", {"result": "2 failing: a, b"})
+    # Ade OS's REAL reply (api/app.py): error is null on success -- the
+    # review found every real reply rendered as a failure.
+    qa.answer_last("dispatch", {"task_id": "t-1", "ok": True, "summary": "2 failing: a, b",
+                                "artifacts": [], "tool_calls": 4, "error": None,
+                                "mission_id": "m-1", "state": "complete", "progress": 1.0,
+                                "confidence": 0.9, "degraded": False})
     assert panel.exec_result.toPlainText() == "2 failing: a, b" and panel.exec_run.isEnabled()
 
 
@@ -269,3 +283,108 @@ def test_a_document_closed_in_the_editor_opens_again_when_its_section_is_shown(r
     panel.refresh()                           # re-renders the SAME section
     assert sum(1 for c in files.calls if c[0] == "read") == reads + 1
     assert files.calls[-1] == ("read", "qa/fuel-management/test_cases.md")
+
+
+
+# -- the review's findings (2026-09-18) --------------------------------------------
+
+TASK_OK = {"task_id": "t-1", "ok": True, "summary": "Ran 40 tests: 38 passed.", "artifacts": [],
+           "tool_calls": 6, "error": None, "mission_id": "m", "state": "complete",
+           "progress": 1.0, "confidence": 0.9, "degraded": False}
+
+
+@pytest.mark.parametrize("reply, words", [
+    ({**TASK_OK, "error": ""}, "Ran 40 tests"),                               # the fast path
+    ({**TASK_OK, "degraded": True}, "marked it degraded"),
+    ({**TASK_OK, "confidence": 0.31}, "confidence 0.31"),
+    ({**TASK_OK, "ok": False, "error": "max rounds", "summary": "half done"},
+     "did not succeed: max rounds"),
+    ({"error": "ReadTimeout: timed out"}, "may still be running"),
+    # api/app.py _error(): the detail sits INSIDE the error envelope
+    ({"error": {"code": "unknown_task_type", "message": "no",
+                "detail": {"task_types": ["test", "verify"]}}, "status": 400},
+     "Types: test, verify")])
+def test_a_dispatch_reply_says_what_ade_os_said(rig, reply, words):
+    panel, qa, *_ = rig
+    go(panel, "test-execution")
+    panel.exec_text.setPlainText("x")
+    panel.exec_run.click()
+    qa.answer_last("dispatch", reply)
+    assert words in panel.exec_result.toPlainText()
+
+
+def test_a_dispatch_in_flight_is_named_at_quit(rig):
+    panel, qa, *_ = rig
+    go(panel, "test-execution")
+    panel.exec_text.setPlainText("x")
+    panel.exec_run.click()
+    assert any("QA task still running" in x for x in panel.unsaved())
+    qa.answer_last("dispatch", TASK_OK)
+    assert panel.unsaved() == []
+
+
+def test_a_qa_document_cannot_be_saved_while_any_run_writes_it(rig):
+    from ade_desktop.workspace.filling import filling
+    panel, qa, pm, files, _ = rig
+    go(panel, "test-cases")
+    files.answer_last("read", {"text": "cases\n", "cached": False})
+    filling().mark("qa/fuel-management")             # e.g. PM's own flow
+    try:
+        panel.artifact.editor.text.setPlainText("mine\n")
+        panel.artifact.editor.save()
+        assert not any(c[0] == "write" for c in files.calls)
+        assert "writing this package" in panel.artifact.editor.note.text()
+    finally:
+        filling().clear("qa/fuel-management")
+
+
+def test_a_read_that_failed_is_not_called_missing(rig):
+    panel, qa, pm, files, _ = rig
+    go(panel, "test-data")
+    files.answer_last("read", {"error": "ReadTimeout: timed out"})
+    assert panel.artifact.board.isHidden() and not panel.artifact.editor.isHidden()
+    assert "No test_data.md" not in panel.artifact.missing.text()
+    assert "Could not open it" in panel.artifact.editor.note.text()
+
+
+def test_the_dashboard_drops_the_last_project_s_rows_on_error(rig):
+    panel, qa, pm, files, active = rig
+    go(panel, "dashboard")
+    files.answer_last("list", {"entries": [{"name": "test_plan.md", "kind": "file"}]})
+    assert panel.package_table.rowCount() == 13
+    active.set("test")
+    files.answer_last("list", {"error": "ConnectError: refused"})
+    assert panel.package_table.rowCount() == 0
+
+
+def test_rerun_after_switching_project_does_not_write_the_old_one(rig):
+    panel, qa, pm, files, active = rig
+    go(panel, "requirements")
+    panel.gen_choose.click()
+    panel.gen_run.click()
+    files.answer_last("upload", {"name": "uploads/r.md"})
+    panel.flow.stop()
+    pm.answer_last("author", {"doc": "requirements.md"})
+    assert not panel.gen_rerun.isHidden()
+    active.set("test")
+    assert panel.gen_rerun.isHidden()
+    authored = len([c for c in pm.calls if c[0] == "author"])
+    panel._on_gen_rerun()
+    assert len([c for c in pm.calls if c[0] == "author"]) == authored
+
+
+def test_a_hidden_panel_raises_no_dialog_when_pm_switches_projects(qapp, tmp_path):
+    asked = []
+    qa, pm, files = FakeQa("qa"), FakePm("pm"), FakeFiles("fs")
+    active = ActiveProject(tmp_path / "w.json")
+    active.set("Fuel Management")
+    panel = QaPanel(qa, pm, files, active, confirm=lambda q: asked.append(q) or False)
+    panel.show()
+    go(panel, "test-cases")
+    files.answer_last("read", {"text": "a\n", "cached": False})
+    panel.artifact.editor.text.setPlainText("b\n")
+    panel.hide()
+    active.set("test")                                   # PM picks another project
+    assert asked == []
+    panel.show()                                         # now it is asked, in view
+    assert asked != []
