@@ -36,6 +36,7 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     report = json.loads(proc.stdout)
     assert report["ok"] is True
+    assert isinstance(report["ade_polled"], bool)
     assert report["sections"] == ["Trader"]
     assert report["trader"] == "panel", report.get("trader_reason")
     assert set(report["trader_pills"]) == {

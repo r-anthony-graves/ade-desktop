@@ -22,6 +22,30 @@ def test_instance_name_is_per_user(monkeypatch):
     assert instance_name() == "ade-desktop-ray_g"
 
 
+def test_listen_alone_is_not_a_guard_on_windows(qapp):
+    """Why the lock exists: measured in review on 2026-09-17, a second
+    QLocalServer.listen() on a name already held returns True on Windows.
+    Two launches that both miss notify_running() would both run."""
+    name = _unique()
+    first, second = SingleInstance(name), SingleInstance(name)
+    try:
+        assert first.listen()
+        assert second.listen()  # if this ever fails, the lock is redundant
+    finally:
+        first.close()
+        second.close()
+
+
+def test_only_one_instance_holds_the_lock(qapp, tmp_path):
+    name = _unique()
+    first, second = SingleInstance(name), SingleInstance(name)
+    assert first.acquire(tmp_path) is True
+    assert second.acquire(tmp_path) is False
+    first.release()
+    assert second.acquire(tmp_path) is True
+    second.release()
+
+
 def test_nothing_listening_means_not_running(qapp):
     started = time.monotonic()
     assert SingleInstance(_unique()).notify_running(timeout_ms=500) is False

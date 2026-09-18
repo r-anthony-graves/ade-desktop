@@ -48,6 +48,39 @@ def setup_logging(directory: Path) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def configure_app(app) -> None:
+    app.setApplicationName("Ade")
+    # Close hides to the tray; DesktopWindow quits explicitly when it must.
+    app.setQuitOnLastWindowClosed(False)
+
+
+def claim_instance(guard, lock_dir: Path, *, wait_s: float = 2.0) -> bool:
+    """True if this launch should run. False if another instance is running
+    (or starting) and has been asked to show itself instead."""
+    if guard.notify_running():
+        log.info("already running: asked it to show itself")
+        return False
+    if guard.acquire(lock_dir):
+        if not guard.listen():
+            log.warning("single-instance listen failed; continuing anyway")
+        return True
+    # The lock is held but nobody answered: another launch began a moment
+    # ago and is not listening yet. Give it a moment, then hand it "show".
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        if guard.notify_running(timeout_ms=200):
+            log.info("already starting: asked it to show itself")
+            return False
+    log.warning("another instance holds the lock and never answered; "
+                "not starting a second one (run-desktop.ps1 -Stop clears it)")
+    return False
+
+
+def connect_instance(guard, win) -> None:
+    guard.show_requested.connect(win.show_and_raise)
+
+
 def build_window(*, state_path: Path, quit_fn=None):
     from ade_desktop.ade_status import AdeStatusClient
     from ade_desktop.app import DesktopWindow
@@ -68,11 +101,14 @@ def smoke_report(win) -> dict:
     registry = [s.name for s in win.sections]
     trader_ok = trader is not None and (
         trader.placeholder_reason is not None or len(pills) == 4)
-    ok = bool(registry) and win.section_names() == registry and trader_ok \
-        and bool(win.ade_pill.text())
+    # `ok` is the STRUCTURE only: DOWN is a correctly rendered state, so a
+    # smoke run against a stopped Ade OS still passes. Whether an answer
+    # arrived at all is reported separately, as `ade_polled`.
+    ok = bool(registry) and win.section_names() == registry and trader_ok
     return {
         "ok": ok,
         "sections": win.section_names(),
+        "ade_polled": win.ade_pill.label != "—",
         "ade_pill": win.ade_pill.text(),
         "ade_tooltip": win.ade_pill.toolTip(),
         "brain": win.brain_label.text(),
@@ -120,9 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     from ade_desktop.single_instance import SingleInstance
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("Ade")
-    # Close hides to the tray; DesktopWindow quits explicitly when it must.
-    app.setQuitOnLastWindowClosed(False)
+    configure_app(app)
     directory = state_dir()
     setup_logging(directory)
     log.info("starting (smoke=%s)", args.smoke)
@@ -131,17 +165,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_smoke(app, args)
 
     guard = SingleInstance()
-    if guard.notify_running():
-        log.info("already running: asked it to show itself")
+    if not claim_instance(guard, directory):
         return 0
-    if not guard.listen():
-        log.warning("single-instance listen failed; continuing anyway")
 
     win = build_window(state_path=directory / "window.json")
-    guard.show_requested.connect(win.show_and_raise)
+    connect_instance(guard, win)
     win.start()
     win.show_initial()
-    return app.exec()
+    code = app.exec()
+    guard.release()
+    return code
 
 
 if __name__ == "__main__":
