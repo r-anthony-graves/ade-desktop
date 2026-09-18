@@ -54,6 +54,18 @@ class AddProjectFlow(QObject):
     # -- starting ---------------------------------------------------------------
 
     def start(self, name: str, file_path: str | None, pasted: str, notes: str) -> bool:
+        """The whole flow: a NEW project, its PMI package, then its QA package."""
+        return self._begin("project", name, file_path, pasted, notes)
+
+    def start_qa(self, name: str, file_path: str | None, pasted: str, notes: str) -> bool:
+        """The QA package alone, for an EXISTING project, into
+        qa/<slug(project)>/ -- where the QA desk reads. (The web's QA panel
+        wrote to the slug of the uploaded FILE, which the desk never opens.)
+        /v1/pm/author needs no skeleton for package qa: it makes the folder
+        and its README itself."""
+        return self._begin("qa", name, file_path, pasted, notes)
+
+    def _begin(self, mode: str, name: str, file_path, pasted: str, notes: str) -> bool:
         name = (name or "").strip()
         if self.busy:
             return False
@@ -71,7 +83,7 @@ class AddProjectFlow(QObject):
                 handle.write(pasted)
             self._pasted = file_path
         self.status.emit("Uploading requirements…")
-        self._pending[self.files.upload(file_path)] = ("upload", name)
+        self._pending[self.files.upload(file_path)] = ("upload", name, mode)
         return True
 
     def stop(self) -> None:
@@ -183,6 +195,14 @@ class AddProjectFlow(QObject):
                 self._fail(f"Upload failed: {error_cause(result)}")
                 return
             self.source = result["name"]
+            if job[2] == "qa":
+                slug = model.slug(job[1])
+                self.intake = {"project": {"name": job[1]}, "slug": slug, "artifacts": [],
+                               "dir": f"pm/{slug}", "qa_dir": f"qa/{slug}"}
+                self.status.emit(f"Authoring the QA package under qa/{slug}/…")
+                self._chain = False
+                self._author("qa")
+                return
             self.status.emit("Creating the project and its PMI skeleton package…")
             self._pending[self.pm.intake(job[1], self.source)] = ("intake",)
         elif kind == "intake":

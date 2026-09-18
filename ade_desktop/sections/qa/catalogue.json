@@ -1,0 +1,330 @@
+[
+ {
+  "id": "dashboard",
+  "label": "Dashboard",
+  "purpose": "QA overview, metrics, and assigned work at a glance.",
+  "areas": [
+   {
+    "id": "overview",
+    "title": "Recommended widgets",
+    "items": [
+     "Assigned tests",
+     "Open defects",
+     "Test pass rate",
+     "Coverage",
+     "Recent activity",
+     "CI status",
+     "Sprint progress"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "requirements",
+  "label": "Requirements",
+  "purpose": "Upload a requirements document to generate the full QA package, or work with epics / stories linked to tests.",
+  "areas": [
+   {
+    "id": "req-generate",
+    "title": "Generated package paths",
+    "items": [
+     "requirements.md",
+     "test_plan.md",
+     "test_suites.md",
+     "test_cases.md",
+     "traceability.md",
+     "defects_seed.md",
+     "automation.md + specialized desks"
+    ]
+   },
+   {
+    "id": "req-structure",
+    "title": "Structure",
+    "items": [
+     "Epics",
+     "Features",
+     "User Stories",
+     "Acceptance Criteria",
+     "Traceability"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "test-plans",
+  "label": "Test Plans",
+  "purpose": "Define testing scope, schedule, and resources.",
+  "areas": [
+   {
+    "id": "plan-fields",
+    "title": "Plan sections",
+    "items": [
+     "Scope",
+     "Objectives",
+     "Schedule",
+     "Environment",
+     "Risks",
+     "Entry/Exit Criteria",
+     "Approval"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "test-suites",
+  "label": "Test Suites",
+  "purpose": "Organize test cases into suites by intent.",
+  "areas": [
+   {
+    "id": "suite-kinds",
+    "title": "Suite types",
+    "items": [
+     "Smoke",
+     "Regression",
+     "Sanity",
+     "Integration",
+     "Performance",
+     "Security",
+     "UAT"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "test-cases",
+  "label": "Test Cases",
+  "purpose": "Create and manage manual and automated test cases.",
+  "areas": [
+   {
+    "id": "case-fields",
+    "title": "Case fields",
+    "items": [
+     "Steps",
+     "Expected Result",
+     "Priority",
+     "Preconditions",
+     "Test Data",
+     "Attachments",
+     "Automation Status"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "test-execution",
+  "label": "Test Execution",
+  "purpose": "Execute tests, record results, and dispatch Ade QA agents.",
+  "areas": [
+   {
+    "id": "results",
+    "title": "Results",
+    "items": [
+     "Pass",
+     "Fail",
+     "Blocked",
+     "Not Run",
+     "Evidence (screenshots/videos)",
+     "Execution History"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "defects",
+  "label": "Defects",
+  "purpose": "Track bugs and their lifecycle.",
+  "areas": [
+   {
+    "id": "defect-fields",
+    "title": "Defect fields",
+    "items": [
+     "Severity",
+     "Priority",
+     "Status",
+     "Assigned Developer",
+     "Environment",
+     "Root Cause",
+     "Reproduction Steps"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "traceability",
+  "label": "Traceability",
+  "purpose": "Follow coverage from requirement through failure.",
+  "areas": [
+   {
+    "id": "links",
+    "title": "Links",
+    "items": [
+     "Requirement → Test Case",
+     "Test Case → Execution",
+     "Execution → Defect"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "reports",
+  "label": "Reports",
+  "purpose": "Test execution and defect reports.",
+  "areas": [
+   {
+    "id": "report-set",
+    "title": "Report types",
+    "items": [
+     "Pass/Fail Summary",
+     "Defect Summary",
+     "Coverage",
+     "Requirement Coverage",
+     "Automation Coverage",
+     "Team Productivity",
+     "Trend Charts"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "test-data",
+  "label": "Test Data",
+  "purpose": "Manage reusable datasets, accounts, and payloads.",
+  "areas": [
+   {
+    "id": "data-kinds",
+    "title": "Data kinds",
+    "items": [
+     "Test Accounts",
+     "Seed Data",
+     "API Payloads",
+     "Mock Data",
+     "Environment Variables"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "automation",
+  "label": "Automation",
+  "purpose": "Framework runs, evidence, coverage, and CI results.",
+  "areas": [
+   {
+    "id": "frameworks",
+    "title": "Frameworks",
+    "items": [
+     "Playwright",
+     "Selenium",
+     "Cypress",
+     "Pytest",
+     "JUnit",
+     "Robot Framework"
+    ]
+   },
+   {
+    "id": "automation-views",
+    "title": "Displays",
+    "items": [
+     "Test runs",
+     "Screenshots",
+     "Videos",
+     "Logs",
+     "Coverage",
+     "CI results"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "api-testing",
+  "label": "API Testing",
+  "purpose": "Collections, requests, environments, and assertions.",
+  "areas": [
+   {
+    "id": "api-parts",
+    "title": "Workspace",
+    "items": [
+     "Collections",
+     "Requests",
+     "Environments",
+     "Variables",
+     "Assertions",
+     "Response History"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "performance",
+  "label": "Performance Testing",
+  "purpose": "Load and stress results with throughput and latency.",
+  "areas": [
+   {
+    "id": "perf-parts",
+    "title": "Views",
+    "items": [
+     "Load Tests",
+     "Stress Tests",
+     "Results",
+     "Response Times",
+     "Throughput",
+     "Error Rate"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "security",
+  "label": "Security Testing",
+  "purpose": "Vulnerabilities, OWASP checklist, and findings.",
+  "areas": [
+   {
+    "id": "sec-parts",
+    "title": "Views",
+    "items": [
+     "Vulnerabilities",
+     "OWASP Checklist",
+     "Pen Tests",
+     "Security Findings"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "analytics",
+  "label": "Analytics",
+  "purpose": "Quality trends and release readiness signals.",
+  "areas": [
+   {
+    "id": "analytics-metrics",
+    "title": "Metrics",
+    "items": [
+     "Defect Trends",
+     "MTTR (Mean Time to Resolve)",
+     "Defect Density",
+     "Test Coverage",
+     "Automation Progress",
+     "Sprint Quality",
+     "Release Readiness"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "settings",
+  "label": "Settings",
+  "purpose": "Users, environments, and integrations for the QA desk.",
+  "areas": [
+   {
+    "id": "qa-settings",
+    "title": "Configuration",
+    "items": [
+     "Users",
+     "Environments",
+     "Integrations",
+     "CI providers",
+     "Notification rules"
+    ]
+   }
+  ]
+ }
+]

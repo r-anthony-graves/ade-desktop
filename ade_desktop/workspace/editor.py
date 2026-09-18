@@ -46,6 +46,7 @@ def _why_not(result) -> str:
 class FileEditor(QWidget):
     saved = Signal(str)
     closed = Signal()
+    loaded = Signal(str, bool)      # path, whether its text arrived (False: missing / refused)
 
     def __init__(self, files, *, confirm=None, parent=None) -> None:
         super().__init__(parent)
@@ -178,6 +179,7 @@ class FileEditor(QWidget):
             self.readonly_reason = _why_not(result)
             self.baseline = ""
             self.note.setText(self.readonly_reason)
+            self.loaded.emit(self.path, False)
             return
         text = _norm(result.get("text", ""))
         self.text.blockSignals(True)
@@ -189,6 +191,7 @@ class FileEditor(QWidget):
             self.note.setText(CACHED_NOTE)
         else:
             self.note.setText("")
+        self.loaded.emit(self.path, True)
 
     def _checked(self, result, content: str) -> None:
         if not isinstance(result, dict) or "error" in result:

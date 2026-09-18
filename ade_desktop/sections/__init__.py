@@ -34,8 +34,10 @@ def build_sections(active=None) -> list[Section]:
     """`active` is the app's one ActiveProject; PM (and QA after it) share
     it. None builds a private one -- a test, or a section on its own."""
     from ade_desktop.sections.pm import build_pm_section
+    from ade_desktop.sections.qa import build_qa_section
     from ade_desktop.sections.trader import build_trader_section, trader_root
     from ade_desktop.workspace.active import ActiveProject
 
     active = active if active is not None else ActiveProject()
-    return [build_trader_section(trader_root()), build_pm_section(active)]
+    return [build_trader_section(trader_root()), build_pm_section(active),
+            build_qa_section(active)]
