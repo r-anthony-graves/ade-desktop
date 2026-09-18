@@ -86,6 +86,22 @@ def test_a_failure_restages_the_exact_line(qapp, tmp_path):
     assert panel.busy is False
 
 
+def test_a_bang_command_on_chat_stays_on_chat(qapp, tmp_path):
+    """Found live, 2026-09-18: '!echo' on Chat switched the panel to the Shell
+    tab, where PLAIN TEXT runs as PowerShell, ungated -- the next question
+    ran as a command ('what : The term ... is not recognized'). A prose line
+    like 'start the build' would run the `start` alias. You reach the Shell
+    tab only by choosing it."""
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("!echo hi")
+    assert panel.current_tab() == "chat"
+    assert client.calls == [("shell", "echo hi")]
+    client.done.emit("r1", {"ok": True, "output": "hi"})
+    assert texts(panel)[-2:] == ["! echo hi", "hi"]
+    panel.send("what time is it")
+    assert client.calls[-1][0] == "ask"
+
+
 def test_the_shell_tab_is_labelled_and_routes_to_the_terminal(qapp, tmp_path):
     panel, client, _, _ = _panel(tmp_path)
     panel.set_tab("shell")

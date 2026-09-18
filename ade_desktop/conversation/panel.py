@@ -342,9 +342,12 @@ class ConversationPanel(QWidget):
             self._push(tab, "system", "staged",
                        "Type a command after ! — e.g. !git status")
             return
-        self.set_tab("shell")
-        self._push("shell", "user", "shell", f"! {r.text}")
-        self._start_turn(self.client.shell(r.text), "shell", "shell", raw)
+        # Answered on the tab it was typed on. Switching to Shell (the
+        # avatar's behaviour) left the next PROSE line running as PowerShell,
+        # ungated -- found live 2026-09-18. The Shell tab is reached only by
+        # choosing it.
+        self._push(tab, "user", "shell", f"! {r.text}")
+        self._start_turn(self.client.shell(r.text), "shell", tab, raw)
 
     def _route_inline_shell(self, r, raw, tab) -> None:
         self.set_tab("chat")
