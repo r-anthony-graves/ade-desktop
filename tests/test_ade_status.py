@@ -26,6 +26,18 @@ def test_unreachable_is_down():
     assert tip == "unreachable: ConnectError: refused"
 
 
+def test_an_answer_that_is_not_health_is_not_called_unreachable():
+    label, _, tip = health_pill({"error": "HTTP 502: not JSON"})
+    assert label == "DOWN"
+    assert tip == "answered, but not with health: HTTP 502: not JSON"
+
+
+def test_a_timeout_is_not_called_unreachable():
+    label, _, tip = health_pill({"error": "ReadTimeout: timed out"})
+    assert label == "DOWN"
+    assert tip == "no answer in time: ReadTimeout: timed out"
+
+
 def test_an_ade_error_envelope_is_down_and_says_so():
     label, tone, tip = health_pill({"error": {
         "code": "unavailable", "message": "no health probes registered"}})
@@ -112,6 +124,31 @@ def test_a_fetch_that_raises_becomes_an_error_payload(qapp, pump):
     client.poll_health()
     assert pump(lambda: bool(got))
     assert got[0] == {"error": "RuntimeError: boom"}
+
+
+def test_stop_waits_for_a_poll_in_flight_and_polls_no_more(qapp):
+    """At quit a worker still running would emit on an object the main
+    thread is tearing down. stop() returns only once it has finished."""
+    import time
+
+    finished = []
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        time.sleep(0.3)
+        finished.append(True)
+        return {"ok": True}
+
+    client = AdeStatusClient("http://ade", fetch=fetch)
+    client.poll_health()
+    time.sleep(0.05)  # the worker is inside fetch now
+    client.stop()
+    assert finished == [True]
+    client.poll_health()
+    client.poll_settings()
+    time.sleep(0.1)
+    assert calls == ["http://ade/v1/health"]
 
 
 def test_a_slow_poll_is_not_stacked(qapp, pump):

@@ -63,6 +63,22 @@ def test_the_header_follows_health_and_settings(qapp, tmp_path):
     assert win.brain_label.text() == "own: deepseek-v4-flash-iq1"
 
 
+def test_the_log_records_a_transition_once_not_every_poll(
+        qapp, tmp_path, caplog):
+    import logging
+
+    win, status, *_ = _window(tmp_path, tray=False)
+    up = {"status": "up", "may_execute_tools": True, "subsystems": {}}
+    with caplog.at_level(logging.INFO, logger="ade_desktop.app"):
+        for payload in (up, up, up, {"error": "ConnectError: refused"},
+                        {"error": "ConnectError: refused"}):
+            status.health.emit(payload)
+    lines = [r.getMessage() for r in caplog.records
+             if r.name == "ade_desktop.app" and "ade os:" in r.getMessage()]
+    assert len(lines) == 2, lines
+    assert "-> UP" in lines[0] and "UP -> DOWN" in lines[1]
+
+
 def test_start_starts_the_status_client_and_every_section(qapp, tmp_path):
     win, status, calls, _ = _window(tmp_path, tray=False)
     win.start()

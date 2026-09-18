@@ -36,11 +36,19 @@ def _trim(value, limit: int = 300) -> str:
 
 
 def _error_text(error) -> str:
+    """Three different failures, worded apart: an error envelope from Ade
+    OS, an answer that was not health at all (a proxy's 502 page), and no
+    answer. A slow Ade OS is not the same as a stopped one."""
     if isinstance(error, dict):
         code = error.get("code") or "error"
         message = error.get("message") or ""
         return f"Ade OS error: {code} - {message}".rstrip(" -")
-    return f"unreachable: {error}"
+    text = str(error)
+    if text.startswith("HTTP "):
+        return f"answered, but not with health: {text}"
+    if "Timeout" in text.split(":", 1)[0]:
+        return f"no answer in time: {text}"
+    return f"unreachable: {text}"
 
 
 def health_pill(payload) -> tuple[str, str, str]:
@@ -108,6 +116,7 @@ class AdeStatusClient(QObject):
                                         thread_name_prefix="ade-status")
         self._inflight: set[str] = set()
         self._lock = threading.Lock()
+        self._stopped = False
         self._health_timer = QTimer(self)
         self._health_timer.setInterval(health_ms)
         self._health_timer.timeout.connect(self.poll_health)
@@ -122,8 +131,14 @@ class AdeStatusClient(QObject):
         self.poll_settings()
 
     def stop(self) -> None:
+        """Stop polling for good, and wait for a poll in flight -- at most
+        one fetch timeout. Called at quit: a worker still running would
+        emit on, or drop the last reference to, an object the main thread
+        is tearing down (found in review, 2026-09-17)."""
+        self._stopped = True
         self._health_timer.stop()
         self._settings_timer.stop()
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
     def poll_health(self) -> None:
         self._poll("health", "/v1/health", self.health)
@@ -133,7 +148,7 @@ class AdeStatusClient(QObject):
 
     def _poll(self, key: str, path: str, signal) -> None:
         with self._lock:
-            if key in self._inflight:
+            if self._stopped or key in self._inflight:
                 return
             self._inflight.add(key)
 

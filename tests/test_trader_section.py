@@ -27,6 +27,19 @@ def test_the_real_trader_is_the_panel_with_four_tabs_and_no_dock(
     assert "QMainWindow, QWidget" in section.qss  # the trader's DARK_QSS
 
 
+def test_the_trader_root_goes_on_the_end_of_sys_path(
+        qapp, isolated_trader_imports, monkeypatch):
+    """tradinglocal has its own `adeos` package; at the FRONT of sys.path it
+    would answer every later `import adeos` in this process."""
+    import sys
+
+    monkeypatch.setenv("COMMAND_CENTER_DESK", "http://127.0.0.1:9")
+    assert str(REAL_ROOT) not in sys.path
+    build_trader_section(REAL_ROOT)
+    assert sys.path[-1] == str(REAL_ROOT)
+    assert sys.path[0] != str(REAL_ROOT)
+
+
 def test_a_missing_root_is_a_placeholder_naming_it(
         qapp, isolated_trader_imports, tmp_path):
     section = build_trader_section(tmp_path / "nowhere")

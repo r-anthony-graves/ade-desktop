@@ -32,8 +32,12 @@ def build_trader_section(root: Path) -> Section:
             "Trader",
             f"Trader not found at {root}. Set ADE_DESKTOP_TRADER_ROOT to the "
             "tradinglocal checkout.")
+    # APPENDED, not inserted first: tradinglocal also has an `adeos`
+    # package, and at the front of sys.path it would answer any later
+    # `import adeos` in this process (found in review, 2026-09-17). Its own
+    # names (`agent`, `engine`) are claimed by nothing else here.
     if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+        sys.path.append(str(root))
     try:
         cc_main = importlib.import_module("agent.command_center.__main__")
         services = importlib.import_module("agent.command_center.services")
