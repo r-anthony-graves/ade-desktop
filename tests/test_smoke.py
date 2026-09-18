@@ -44,3 +44,26 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     assert out.exists() and out.stat().st_size > 0
     # The smoke run used ADE_DESKTOP_STATE_DIR, never the real directory.
     assert (tmp_path / "state" / "desktop.log").exists()
+
+
+def test_the_log_records_transitions_not_every_poll(tmp_path):
+    """Measured 2026-09-17 on the first live run: httpx logged every request
+    at INFO, about one line a second, burying the transitions."""
+    import logging
+
+    from ade_desktop.__main__ import setup_logging
+
+    root = logging.getLogger()
+    before = list(root.handlers)
+    levels = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
+    try:
+        setup_logging(tmp_path)
+        assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+        assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+        assert logging.getLogger("ade_desktop").getEffectiveLevel() <= logging.INFO
+    finally:
+        for handler in [h for h in root.handlers if h not in before]:
+            root.removeHandler(handler)
+            handler.close()
+        for name, level in levels.items():
+            logging.getLogger(name).setLevel(level)

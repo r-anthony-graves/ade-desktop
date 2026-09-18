@@ -42,6 +42,10 @@ def setup_logging(directory: Path) -> None:
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # httpx logs every request at INFO -- the trader and the header poll
+    # about once a second, which buried the transitions this log is for.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def build_window(*, state_path: Path, quit_fn=None):
