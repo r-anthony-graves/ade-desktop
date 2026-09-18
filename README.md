@@ -6,8 +6,8 @@ rail only once it exists.
 
 | Piece | Section | State |
 |---|---|---|
-| 1 | Frame + **Trader** | built, and this README describes it |
-| 2 | Ade conversation | next |
+| 1 | Frame + **Trader** | built |
+| 2 | **Ade conversation** (the right-hand panel) | built |
 | 3 | Orb + voice (after this, the Electron avatar retires) | |
 | 4 | PM | |
 | 5 | QA | |
@@ -52,6 +52,35 @@ launch takes it over.
   the same pills, RESTART TRADER, and the Desk, Decisions, Committee and
   Record screens, **minus the Chat dock**. If it can't be imported, the
   section says why and the rest of the app still starts.
+
+## The Ade panel (piece 2)
+
+The panel sits on the right of every section. Toggle it with **Ade ◂** in the
+header or **Ctrl+Shift+A**, which works in this window only and is never a
+system-wide key. It talks to the **main Ade OS on `:8300`** (Ray,
+2026-09-18), not the avatar's twin.
+
+| You type (Chat tab) | Goes to |
+|---|---|
+| a question | `/v1/ask` with the last 40 turns; the answer lands here |
+| a bare command line (`git status`, `get-process`) | runs in the shell and streams here; **Stop** kills it |
+| `?question` | plain chat, no files read |
+| `/coding fix it` (any task type) | an agent does it through the permission gate |
+| `!command`, or anything on the **Shell** tab | the shell. **NOT gated by Permission.check()**, as labelled |
+
+- **One turn at a time.** Pressing Enter mid-turn puts your line back in the
+  box. A failed call puts your *exact* line back, so Enter retries.
+- **Approvals** appear as cards. The window raises itself, and so does the
+  tray if the window was hidden. **Only a click** answers a card: Enter and
+  shortcuts can't. A card answered in the WebUI reads "Answered elsewhere",
+  and a network blip never marks one decided.
+- **Commands:** `/help` lists them, from the one table. Also `/clear`,
+  `/compact`, `/restore`, `/reset` (pending approvals stay), `/health`,
+  `/search`, `/research`, `/skill`, `/unskill`, `/superpowers` (which
+  prefers the localised `ade-` skills), and `/upload`, or drop files on the
+  panel.
+- **Threads** live in `threads.json` beside `window.json`, separate from the
+  avatar's.
 
 ## Settings (environment)
 
