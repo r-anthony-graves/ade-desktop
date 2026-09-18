@@ -208,6 +208,7 @@ class PmPanel(QWidget):
         self._clock = clock
         self._last_refresh = -1e9
         self._pending: dict[str, tuple] = {}
+        self._latest: dict[str, str] = {}     # kind -> the newest read's request id
         self.projects: list[dict] = []
         self.backlog_rows: list[dict] = []
         self.backlog_statuses: list[str] = []
@@ -291,6 +292,7 @@ class PmPanel(QWidget):
         self.tabs.currentChanged.connect(self._on_tab)
         self.flow.created.connect(self._on_created)
         self.flow.busy_changed.connect(self._on_flow_busy)
+        self.flow.package.connect(self._on_flow_package)
 
     def _build_overview(self) -> QWidget:
         w = QWidget()
@@ -308,8 +310,6 @@ class PmPanel(QWidget):
         self.editor.hide()
         self.editor.closed.connect(self.editor.hide)
         v.addWidget(self.editor, 3)
-        self.pm_list.itemActivated.connect(self._on_open_artifact)
-        self.qa_list.itemActivated.connect(self._on_open_artifact)
         self.pm_list.itemClicked.connect(self._on_open_artifact)
         self.qa_list.itemClicked.connect(self._on_open_artifact)
         return w
@@ -415,7 +415,8 @@ class PmPanel(QWidget):
         row.addWidget(self.health_summary, 1)
         row.addWidget(self.health_refresh)
         v.addLayout(row)
-        self.health_table = _table(["Severity", "Domain", "What", "Why", "Evidence"])
+        self.health_table = _table(["Severity", "Domain", "Subject", "What", "Why",
+                                    "Evidence"])
         v.addWidget(self.health_table, 1)
         self.coverage = QLabel("")
         self.coverage.setWordWrap(True)
@@ -425,6 +426,7 @@ class PmPanel(QWidget):
         return w
 
     def stop_clients(self) -> None:
+        self.flow.close()
         self.pm.stop()
         self.files.stop()
 
@@ -435,17 +437,24 @@ class PmPanel(QWidget):
         if self._clock() - self._last_refresh > STALE_S:
             self.refresh()
 
+    def _read(self, kind: str, rid: str) -> None:
+        """Answers can arrive out of order; only the newest read of a kind
+        is shown (review: a refresh landing after a write's re-read showed
+        the state from before the write)."""
+        self._latest[kind] = rid
+        self._pending[rid] = (kind,)
+
     def refresh(self) -> None:
         self._last_refresh = self._clock()
-        self._pending[self.pm.projects()] = ("projects",)
-        self._pending[self.pm.backlog()] = ("backlog",)
-        self._pending[self.pm.risks()] = ("risks",)
+        self._read("projects", self.pm.projects())
+        self._read("backlog", self.pm.backlog())
+        self._read("risks", self.pm.risks())
         if self.tabs.currentIndex() == 3:
             self.run_findings()
 
     def run_findings(self) -> None:
         self.health_summary.setText("Running a monitoring cycle…")
-        self._pending[self.pm.findings()] = ("findings",)
+        self._read("findings", self.pm.findings())
 
     def _on_tab(self, index: int) -> None:
         if index == 3:
@@ -455,6 +464,8 @@ class PmPanel(QWidget):
         job = self._pending.pop(rid, None)
         if job is None:
             return
+        if job[0] in self._latest and self._latest[job[0]] != rid:
+            return                                  # an older read of the same thing
         getattr(self, f"_got_{job[0]}")(result, *job[1:])
 
     def _got_projects(self, result) -> None:
@@ -471,6 +482,8 @@ class PmPanel(QWidget):
             self.backlog_note.setText(f"Could not load the backlog: {error_cause(result)}")
             self.backlog_note.setStyleSheet(ERROR_STYLE)
             return
+        self.backlog_note.setStyleSheet("")
+        self.backlog_note.setText("")
         self.backlog_rows = [b for b in result.get("backlog") or [] if isinstance(b, dict)]
         self.backlog_statuses = [s for s in result.get("statuses") or [] if isinstance(s, str)]
         self._render_backlog()
@@ -480,6 +493,8 @@ class PmPanel(QWidget):
             self.risk_note.setText(f"Could not load the risks: {error_cause(result)}")
             self.risk_note.setStyleSheet(ERROR_STYLE)
             return
+        self.risk_note.setStyleSheet("")
+        self.risk_note.setText("")
         self.risk_rows = [r for r in result.get("risks") or [] if isinstance(r, dict)]
         self._render_risks()
 
@@ -489,9 +504,17 @@ class PmPanel(QWidget):
             return
         found = model.sort_findings([f for f in result.get("findings") or []
                                      if isinstance(f, dict)])
-        self.health_summary.setText(model.summarise_findings(result.get("summary") or {}))
-        _fill(self.health_table, [[f.get("severity"), f.get("domain"), f.get("what"),
-                                   f.get("why"), f.get("evidence")] for f in found])
+        if result.get("detail") and not found:
+            # "no records store configured": nothing was measured, which
+            # is not the same as healthy (the daemon's own rule).
+            self.health_summary.setText(f"Not measured: {result['detail']}.")
+        else:
+            self.health_summary.setText(
+                model.summarise_findings(result.get("summary") or {})
+                + " — across every live project, not only this one.")
+        _fill(self.health_table, [[f.get("severity"), f.get("domain"), f.get("subject") or "—",
+                                   f.get("what"), f.get("why"), f.get("evidence")]
+                                  for f in found])
         cov = result.get("coverage") or {}
         covered = ", ".join(cov.get("covered") or [])
         uncovered = cov.get("uncovered") or {}
@@ -564,14 +587,30 @@ class PmPanel(QWidget):
         if self.selected is None:
             return
         s = model.slug(self.selected["name"])
-        self.pm_label.setText(f"PM artifacts   pm/{s}/")
-        self.qa_label.setText(f"QA package   qa/{s}/")
-        self._pending[self.files.list_dir(f"pm/{s}")] = ("listing", "pm")
-        self._pending[self.files.list_dir(f"qa/{s}")] = ("listing", "qa")
+        self._label_groups()
+        self._pending[self.files.list_dir(f"pm/{s}")] = ("listing", "pm", s)
+        self._pending[self.files.list_dir(f"qa/{s}")] = ("listing", "qa", s)
 
-    def _got_listing(self, result, which: str) -> None:
+    def _label_groups(self) -> None:
+        if self.selected is None:
+            return
+        s = model.slug(self.selected["name"])
+        writing = self.flow.package_dir
+        for label, title, d in ((self.pm_label, "PM artifacts", f"pm/{s}"),
+                                (self.qa_label, "QA package", f"qa/{s}")):
+            label.setText(f"{title}   {d}/" + ("   filling…" if writing == d else ""))
+        # A document Ade is about to rewrite must not be saved over meanwhile.
+        path = self.editor.path or ""
+        self.editor.block_reason = (
+            "Ade is writing this package right now; save after it finishes."
+            if writing and path.startswith(writing + "/") else "")
+
+    def _got_listing(self, result, which: str, slug: str) -> None:
+        if self.selected is None or model.slug(self.selected["name"]) != slug:
+            return                              # a listing for the project before
         lst = self.pm_list if which == "pm" else self.qa_list
         lst.clear()
+        missing = isinstance(result, dict) and result.get("status") == 404
         entries = [e for e in (result.get("entries") or []) if e.get("kind") == "file"] \
             if _ok(result) else []
         for e in entries:
@@ -579,8 +618,12 @@ class PmPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, e.get("path"))
             lst.addItem(item)
         if not entries:
-            empty = QListWidgetItem("No PMI artifacts yet — use + Add." if which == "pm"
-                                    else "No QA package yet.")
+            if _ok(result) or missing:
+                text = ("No PMI artifacts yet — use + Add." if which == "pm"
+                        else "No QA package yet.")
+            else:
+                text = f"Could not list it: {error_cause(result)}"
+            empty = QListWidgetItem(text)
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             lst.addItem(empty)
 
@@ -588,6 +631,7 @@ class PmPanel(QWidget):
         path = item.data(Qt.ItemDataRole.UserRole)
         if path and self.editor.open(path):
             self.editor.show()
+            self._label_groups()
 
     def _on_open_qa(self) -> None:
         self.section_requested.emit("QA")
@@ -600,15 +644,20 @@ class PmPanel(QWidget):
         if p is None or status == p.get("status"):
             return
         self.status_error.setText("")
+        # Not an optimistic copy: the combo goes back to what Ade OS last
+        # said and waits, disabled, for the re-read to show the change.
+        self.status_combo.setCurrentIndex(max(0, self.status_combo.findData(p.get("status"))))
+        self.status_combo.setEnabled(False)
         self._pending[self.pm.set_status(p["id"], status)] = ("status", p["name"], p.get("status"))
 
     def _got_status(self, result, name: str, before: str) -> None:
+        self.status_combo.setEnabled(self.selected is not None)
         if not _ok(result):
             self.status_error.setText(f"{name}: {error_cause(result)}")
             if self.selected and self.selected.get("name") == name:
                 self.status_combo.setCurrentIndex(max(0, self.status_combo.findData(before)))
             return
-        self._pending[self.pm.projects()] = ("projects",)
+        self._read("projects", self.pm.projects())
 
     # -- backlog ------------------------------------------------------------------
 
@@ -629,8 +678,9 @@ class PmPanel(QWidget):
         _fill(self.backlog_table, [[r.get("title"), r.get("detail"), r.get("status"),
                                     r.get("resolution")] for r in shown],
               [r.get("id") for r in shown])
-        if not shown and self.backlog_note.styleSheet() != ERROR_STYLE:
-            self.backlog_note.setText("No backlog items for this project." if name else "")
+        if self.backlog_note.styleSheet() != ERROR_STYLE:
+            self.backlog_note.setText("" if shown or not name
+                                      else "No backlog items for this project.")
         self.backlog_add.setEnabled(bool(name))
         self._sync_backlog_buttons()
 
@@ -675,13 +725,14 @@ class PmPanel(QWidget):
         if what == "add":
             self.backlog_title.clear()
             self.backlog_detail.clear()
-        self._pending[self.pm.backlog()] = ("backlog",)
+        self._read("backlog", self.pm.backlog())
 
     # -- risks --------------------------------------------------------------------
 
     def _render_risks(self) -> None:
         name = (self.selected or {}).get("name")
-        rows = model.sort_risks(model.for_project(self.risk_rows, name)) if name else []
+        # Ade OS's order: highest severity (probability x impact) first.
+        rows = model.for_project(self.risk_rows, name) if name else []
         _fill(self.risk_table, [[r.get("title"), r.get("probability"), r.get("impact"),
                                  r.get("severity"), r.get("response"), r.get("owner"),
                                  r.get("status")] for r in rows],
@@ -730,14 +781,32 @@ class PmPanel(QWidget):
         if what == "add":
             self.risk_title.clear()
             self.risk_response_edit.clear()
-        self._pending[self.pm.risks()] = ("risks",)
+        self._read("risks", self.pm.risks())
 
     # -- add project ----------------------------------------------------------------
 
     def _on_created(self, name: str) -> None:
         self.active.set(name)
-        self._pending[self.pm.projects()] = ("projects",)
+        self._read("projects", self.pm.projects())
 
     def _on_flow_busy(self, busy: bool) -> None:
+        self._label_groups()
         if not busy:
             self._list_artifacts()      # the disk, not the flow's summary
+
+    def _on_flow_package(self, pkg: str, kind: str, note: str) -> None:
+        self._label_groups()            # "filling…" follows the package being written
+
+    # -- quitting -----------------------------------------------------------------
+
+    def unsaved(self) -> list[str]:
+        """What quitting would lose: an edited file, a save in flight, an
+        authoring run in progress."""
+        lost = []
+        if self.editor.is_dirty():
+            lost.append(f"unsaved changes to {self.editor.path}")
+        if self.editor.is_busy():
+            lost.append(f"a save of {self.editor.path} still in flight")
+        if self.flow.busy:
+            lost.append("an add-project run still authoring documents")
+        return lost

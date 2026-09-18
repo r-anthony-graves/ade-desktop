@@ -234,3 +234,23 @@ def test_show_and_raise_shows_a_hidden_window(qapp, tmp_path):
     win.hide()
     win.show_and_raise()
     assert win.isVisible()
+
+
+
+def test_quit_asks_before_losing_unsaved_work(qapp, tmp_path):
+    from PySide6.QtWidgets import QWidget
+
+    class Editing(QWidget):
+        def unsaved(self):
+            return ["unsaved changes to pm/x/charter.md"]
+
+    asked, quits = [], []
+    win = DesktopWindow([Section("PM", Editing())], FakeStatus(),
+                        state_path=tmp_path / "window.json", tray_available=False,
+                        quit_fn=lambda: quits.append(True),
+                        confirm_quit=lambda q: asked.append(q) or False)
+    win.quit_app()
+    assert quits == [] and "pm/x/charter.md" in asked[0]      # kept open
+    win._confirm_quit = lambda q: True
+    win.quit_app()
+    assert quits == [True]

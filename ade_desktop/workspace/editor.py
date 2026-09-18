@@ -1,17 +1,26 @@
-"""The one file editor: PM artifacts now, QA sections and Code later.
+"""The one file editor: PM artifacts, QA sections, and Code after them.
 
-    open(path)   GET /v1/file?source=disk. The editor is read-only until the
-                 file is here, and stays read-only -- with the reason shown --
-                 when the answer is the QVM index copy, too large, not a text
-                 type, or missing.
-    save()       re-reads the file first and REFUSES if the disk changed
-                 since it was opened (Ade OS has no version check: the last
-                 writer wins, and Ade writes into these folders), then
-                 PUT /v1/file. A failed save keeps the text.
+    open(path)   GET /v1/file?source=disk. Read-only -- with the reason shown
+                 -- when the answer is the QVM index copy, is not UTF-8, is
+                 too large, not a text type or missing, or holds characters
+                 this editor would change on the way back (a lone CR, a
+                 literal U+2029): saving must never write what was not read.
+    save()       one at a time. Re-reads the file first and REFUSES if the
+                 disk changed since it was opened (Ade OS has no version
+                 check: the last writer wins, and Ade writes into these
+                 folders), then PUT /v1/file. A failed save keeps the text.
     revert()     reads it again.
 
-The server writes LF, so CRLF is not a difference. Unsaved edits are never
-dropped without asking.
+What is compared and saved is the document's RAW text (toRawText):
+toPlainText turns a non-breaking space into a plain one (measured). A
+UTF-8 BOM is kept aside and put back on save -- Windows PowerShell 5.1
+cannot parse a script that lost it. The server writes LF, so CRLF is not a
+difference (a CRLF file is saved LF: that is the server's rule).
+
+Every request carries a ticket; an answer from before the latest open,
+revert or close is dropped, so a slow read can never replace what was
+typed since, and a discarded edit's save can never land (review,
+2026-09-18). Unsaved edits are never dropped without asking.
 """
 
 from __future__ import annotations
@@ -23,9 +32,14 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
 
 from ade_desktop.conversation.replies import error_cause
 
+BOM = "\ufeff"
 CACHED_NOTE = ("This is Ade's index copy, not the file on disk, so editing is off: "
                "saving it would overwrite the file with a fragment. Ade OS serves "
                "the disk copy after its next restart.")
+UNDECODABLE_NOTE = ("This file is not UTF-8 (perhaps UTF-16 or a Windows code page), so "
+                    "editing is off: saving would replace every byte it could not read.")
+ROUNDTRIP_NOTE = ("This file holds characters this editor would change on saving "
+                  "(a lone carriage return or a paragraph separator), so editing is off.")
 CHANGED_NOTE = ("{path} changed on disk since you opened it, so nothing was saved. "
                 "Your text is still here; Revert loads the new version.")
 
@@ -55,6 +69,10 @@ class FileEditor(QWidget):
         self.path: str | None = None
         self.baseline: str | None = None
         self.readonly_reason = ""
+        self.block_reason = ""          # set by the owner: e.g. Ade is writing this package
+        self._bom = False
+        self._ticket = 0
+        self._saving = False
         self._pending: dict[str, tuple] = {}
 
         box = QVBoxLayout(self)
@@ -93,9 +111,18 @@ class FileEditor(QWidget):
 
     # -- state ------------------------------------------------------------------
 
+    def current_text(self) -> str:
+        """The document as it would be saved: raw text (keeps U+00A0 and
+        U+2028, which toPlainText does not), block breaks as LF."""
+        return self.text.document().toRawText().replace("\u2029", "\n")
+
     def is_dirty(self) -> bool:
         return (self.baseline is not None and not self.readonly_reason
-                and _norm(self.text.toPlainText()) != self.baseline)
+                and self.current_text() != self.baseline)
+
+    def is_busy(self) -> bool:
+        """A save is in flight: quitting now would abandon it."""
+        return self._saving
 
     def _ask(self, question: str) -> bool:
         if self._confirm is not None:
@@ -108,14 +135,22 @@ class FileEditor(QWidget):
         self.title.setText((self.path or "") + (" •" if dirty else ""))
         editable = self.baseline is not None and not self.readonly_reason
         self.text.setReadOnly(not editable)
-        self.save_button.setEnabled(editable and dirty)
-        self.revert_button.setEnabled(self.path is not None)
+        self.save_button.setEnabled(editable and dirty and not self._saving)
+        self.revert_button.setEnabled(self.path is not None and not self._saving)
         self.close_button.setEnabled(self.path is not None)
+
+    def _set_text(self, text: str) -> None:
+        self.text.blockSignals(True)
+        self.text.setPlainText(text)
+        self.text.blockSignals(False)
 
     # -- actions ----------------------------------------------------------------
 
     def open(self, path: str) -> bool:
-        """False if the user kept unsaved edits instead."""
+        """False if the user kept unsaved edits instead. Opening the file
+        that is already open does nothing (a double-click is not a reload)."""
+        if path == self.path:
+            return True
         if self.is_dirty() and not self._ask(
                 f"Discard your unsaved changes to {self.path}?"):
             return False
@@ -123,12 +158,12 @@ class FileEditor(QWidget):
         return True
 
     def _load(self, path: str) -> None:
-        self.path, self.baseline, self.readonly_reason = path, None, ""
-        self.text.blockSignals(True)
-        self.text.setPlainText("")
-        self.text.blockSignals(False)
+        self._ticket += 1
+        self._saving = False
+        self.path, self.baseline, self.readonly_reason, self._bom = path, None, "", False
+        self._set_text("")
         self.note.setText("Loading…")
-        self._pending[self.files.read(path)] = ("open", path)
+        self._pending[self.files.read(path)] = ("open", self._ticket)
         self._refresh()
 
     def revert(self) -> None:
@@ -142,29 +177,33 @@ class FileEditor(QWidget):
         if self.is_dirty() and not self._ask(
                 f"Close {self.path} and discard your unsaved changes?"):
             return False
-        self.path, self.baseline, self.readonly_reason = None, None, ""
-        self.text.blockSignals(True)
-        self.text.setPlainText("")
-        self.text.blockSignals(False)
+        self._ticket += 1
+        self._saving = False
+        self.path, self.baseline, self.readonly_reason, self._bom = None, None, "", False
+        self._set_text("")
         self.note.setText("")
         self._refresh()
         self.closed.emit()
         return True
 
     def save(self) -> None:
-        if not self.is_dirty() or self.path is None:
+        if self._saving or not self.is_dirty() or self.path is None:
             return
-        content = _norm(self.text.toPlainText())
+        if self.block_reason:
+            self.note.setText(self.block_reason)
+            return
+        content = (BOM if self._bom else "") + self.current_text()
+        self._saving = True
         self.note.setText("Checking the file on disk before saving…")
-        self._pending[self.files.read(self.path)] = ("check", self.path, content)
-        self.save_button.setEnabled(False)
+        self._pending[self.files.read(self.path)] = ("check", self._ticket, content)
+        self._refresh()
 
     # -- results ----------------------------------------------------------------
 
     def _on_done(self, rid: str, result) -> None:
         job = self._pending.pop(rid, None)
-        if job is None or job[1] != self.path:
-            return                              # another file is open now
+        if job is None or job[1] != self._ticket:
+            return                  # from before the latest open, revert or close
         kind = job[0]
         if kind == "open":
             self._opened(result)
@@ -174,43 +213,55 @@ class FileEditor(QWidget):
             self._written(result, job[2])
         self._refresh()
 
+    def _refuse(self, reason: str) -> None:
+        self.readonly_reason = reason
+        self.note.setText(reason)
+
     def _opened(self, result) -> None:
         if not isinstance(result, dict) or "error" in result:
-            self.readonly_reason = _why_not(result)
             self.baseline = ""
-            self.note.setText(self.readonly_reason)
+            self._refuse(_why_not(result))
             self.loaded.emit(self.path, False)
             return
-        text = _norm(result.get("text", ""))
-        self.text.blockSignals(True)
-        self.text.setPlainText(text)
-        self.text.blockSignals(False)
+        raw = _norm(result.get("text", ""))
+        self._bom = raw.startswith(BOM)
+        text = raw[1:] if self._bom else raw
+        self._set_text(text)
         self.baseline = text
         if result.get("cached"):
-            self.readonly_reason = CACHED_NOTE
-            self.note.setText(CACHED_NOTE)
+            self._refuse(CACHED_NOTE)
+        elif result.get("undecodable"):
+            self._refuse(UNDECODABLE_NOTE)
+        elif self.current_text() != text:
+            self._refuse(ROUNDTRIP_NOTE)
         else:
             self.note.setText("")
         self.loaded.emit(self.path, True)
 
     def _checked(self, result, content: str) -> None:
+        def stop(message: str) -> None:
+            self._saving = False
+            self.note.setText(message)
+
         if not isinstance(result, dict) or "error" in result:
-            self.note.setText(f"Could not re-read {self.path} before saving "
-                              f"({error_cause(result)}), so nothing was saved.")
+            stop(f"Could not re-read {self.path} before saving "
+                 f"({error_cause(result)}), so nothing was saved.")
             return
         if result.get("cached"):
-            self.note.setText(CACHED_NOTE)
+            stop(CACHED_NOTE)
             return
-        if _norm(result.get("text", "")) != self.baseline:
-            self.note.setText(CHANGED_NOTE.format(path=self.path))
+        disk = _norm(result.get("text", ""))
+        if (disk[1:] if disk.startswith(BOM) else disk) != self.baseline:
+            stop(CHANGED_NOTE.format(path=self.path))
             return
         self.note.setText("Saving…")
-        self._pending[self.files.write(self.path, content)] = ("write", self.path, content)
+        self._pending[self.files.write(self.path, content)] = ("write", self._ticket, content)
 
     def _written(self, result, content: str) -> None:
+        self._saving = False
         if not isinstance(result, dict) or "error" in result or not result.get("ok"):
             self.note.setText(f"Save failed: {error_cause(result)}. Your text is kept.")
             return
-        self.baseline = content
+        self.baseline = content[1:] if content.startswith(BOM) else content
         self.note.setText(f"Saved {self.path}.")
         self.saved.emit(self.path)

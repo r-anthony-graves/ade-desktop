@@ -305,3 +305,73 @@ def test_it_refuses_without_a_name_or_a_source(qapp, tmp_path):
     assert d.flow.start("X", None, "   ", "") is False
     assert [e[1] for e in d.events if e[0] == "failed"] == [
         "Project name is required.", "Choose a file or paste requirements text."]
+
+
+# -- the review's findings (2026-09-18) --------------------------------------------
+
+def test_stop_during_the_upload_creates_nothing(qapp, tmp_path):
+    d = Driver(tmp_path)
+    d.flow.start("Fuel", "C:/x/fuel.md", "", "")
+    d.flow.stop()
+    d.fs_answer({"name": "uploads/fuel.md"})
+    assert not any(c[0] == "intake" for c in d.pm.calls)
+    assert d.events[-1][0] == "failed" and "Nothing was created" in d.events[-1][1]
+    assert not d.flow.busy
+
+
+def test_stop_during_the_intake_authors_nothing_and_offers_both_reruns(qapp, tmp_path):
+    d = Driver(tmp_path)
+    d.flow.start("Fuel", "C:/x/fuel.md", "", "")
+    d.fs_answer({"name": "uploads/fuel.md"})
+    d.flow.stop()
+    d.pm_answer(INTAKE)
+    assert not any(c[0] == "author" for c in d.pm.calls)
+    assert ("package", "pm", "error", "not started — Stop was pressed") in d.events
+    assert ("package", "qa", "error", "not started — Stop was pressed") in d.events
+    assert d.flow.rerun("qa")                             # the intake is kept
+
+
+def test_stop_at_the_end_of_pm_still_leaves_qa_a_rerun(qapp, tmp_path):
+    d = Driver(tmp_path)
+    d.through_intake()
+    d.pm_answer({"doc": "charter.md"})                    # first PM doc done
+    d.flow.stop()
+    d.pm_answer({"doc": "risks.md"})                      # the last PM doc lands
+    n = len(d.files.calls)
+    d.fs_answer({"text": "Fill status: filled"}, n=n - 1)
+    d.fs_answer({"text": "Fill status: filled"}, n=n)
+    assert ("package", "qa", "error", "not started — Stop was pressed") in d.events
+    assert ("status", "Stopped.") in d.events
+    assert not any("Done" in e[1] for e in d.events if e[0] == "status" and e[1])
+
+
+def test_the_pasted_file_gets_a_private_folder_and_it_is_removed(qapp, tmp_path):
+    import os
+    d = Driver(tmp_path)
+    (tmp_path / "fleet-tracker-requirements.md").write_text("SOMEONE ELSE'S FILE")
+    d.flow.start("Fleet Tracker", None, "# Fleet Tracker", "")
+    staged = d.files.calls[0][1]
+    assert os.path.dirname(staged) != str(tmp_path)
+    assert (tmp_path / "fleet-tracker-requirements.md").read_text() == "SOMEONE ELSE'S FILE"
+    d.fs_answer({"error": "ConnectError: refused"})
+    assert not os.path.exists(os.path.dirname(staged))
+    assert (tmp_path / "fleet-tracker-requirements.md").exists()
+
+
+def test_a_paste_that_cannot_be_staged_does_not_wedge_the_flow(qapp, tmp_path):
+    d = Driver(tmp_path)
+    d.flow._tmpdir = str(tmp_path / "no" / "such" / "dir")
+    assert d.flow.start("X", None, "text", "") is False
+    assert not d.flow.busy and d.events[-1][0] == "failed"
+    assert "Could not stage" in d.events[-1][1]
+
+
+def test_the_package_being_written_is_named_while_it_is(qapp, tmp_path):
+    d = Driver(tmp_path)
+    d.through_intake()
+    assert d.flow.package_dir == "pm/fuel"
+    d.author_all()
+    n = len(d.files.calls)
+    d.fs_answer({"text": "Fill status: filled"}, n=n - 1)
+    d.fs_answer({"text": "Fill status: filled"}, n=n)
+    assert d.flow.package_dir == "qa/fuel"

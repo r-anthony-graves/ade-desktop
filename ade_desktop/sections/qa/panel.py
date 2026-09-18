@@ -295,8 +295,20 @@ class QaPanel(QWidget):
     # -- loading ----------------------------------------------------------------
 
     def stop_clients(self) -> None:
+        self.flow.close()
         for c in (self.qa, self.pm, self.files):
             c.stop()
+
+    def unsaved(self) -> list[str]:
+        lost = []
+        for view in (self.artifact, self.req_artifact):
+            if view.editor.is_dirty():
+                lost.append(f"unsaved changes to {view.editor.path}")
+            if view.editor.is_busy():
+                lost.append(f"a save of {view.editor.path} still in flight")
+        if self.flow.busy:
+            lost.append("a QA package still being generated")
+        return lost
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

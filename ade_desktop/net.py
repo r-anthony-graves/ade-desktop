@@ -91,8 +91,13 @@ def get_text(url: str, timeout: float = 30.0) -> dict:
     if response.status_code >= 400:
         return _result(response)
     cached = response.headers.get("x-qvm-cached", "").lower() == "true"
-    return {"text": response.content.decode("utf-8", errors="replace"),
-            "cached": cached}
+    try:
+        return {"text": response.content.decode("utf-8"), "cached": cached}
+    except UnicodeDecodeError:
+        # Shown, but flagged: an editor that saved this text back would
+        # replace every byte it could not read (UTF-16, a code page).
+        return {"text": response.content.decode("utf-8", errors="replace"),
+                "cached": cached, "undecodable": True}
 
 
 def post_bytes(url: str, body: dict, timeout: float) -> dict:

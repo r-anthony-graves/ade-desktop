@@ -165,3 +165,119 @@ def test_a_write_reply_that_does_not_say_ok_is_not_a_save(ed):
     files.answer({"text": "line one\nline two\n", "cached": False})
     files.answer({"detail": "something else answered"})
     assert "Save failed" in editor.note.text() and editor.is_dirty()
+
+
+# -- the review's findings (2026-09-18) --------------------------------------------
+
+def test_a_bom_is_kept_aside_and_put_back_on_save(ed):
+    editor, files = ed
+    editor.open("scripts/run.ps1")
+    files.answer({"text": "\ufeffWrite-Host 'hi'\n", "cached": False})
+    assert not editor.is_dirty() and not editor.text.isReadOnly()
+    editor.text.setPlainText("Write-Host 'bye'\n")
+    editor.save()
+    files.answer({"text": "\ufeffWrite-Host 'hi'\r\n", "cached": False})
+    assert files.calls[-1] == ("write", "scripts/run.ps1", "\ufeffWrite-Host 'bye'\n")
+
+
+def test_a_non_breaking_space_is_not_turned_into_a_space(ed):
+    editor, files = ed
+    editor.open("pm/x/a.md")
+    files.answer({"text": "price:\u00a010\u00a0USD\n", "cached": False})
+    assert not editor.is_dirty() and not editor.save_button.isEnabled()
+    cursor = editor.text.textCursor()
+    cursor.movePosition(cursor.MoveOperation.End)
+    editor.text.setTextCursor(cursor)
+    editor.text.insertPlainText("more\n")
+    editor.save()
+    files.answer({"text": "price:\u00a010\u00a0USD\n", "cached": False})
+    assert files.calls[-1][2] == "price:\u00a010\u00a0USD\nmore\n"
+
+
+@pytest.mark.parametrize("text", ["a\rb\n", "a\u2029b\n"])
+def test_characters_the_editor_would_change_open_read_only(ed, text):
+    editor, files = ed
+    editor.open("x.md")
+    files.answer({"text": text, "cached": False})
+    assert editor.text.isReadOnly() and "would change" in editor.note.text()
+
+
+def test_a_file_that_is_not_utf8_opens_read_only(ed):
+    editor, files = ed
+    editor.open("out.txt")
+    files.answer({"text": "\ufffd\ufffdh\x00i", "cached": False, "undecodable": True})
+    assert editor.text.isReadOnly() and "not UTF-8" in editor.note.text()
+
+
+def test_get_text_flags_bytes_that_are_not_utf8():
+    from ade_desktop import net
+
+    class R:
+        status_code = 200
+        headers = {}
+        content = "héllo".encode("utf-16")
+
+    class C:
+        def __init__(self, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url): return R()
+
+    real = net.httpx.Client
+    net.httpx.Client = C
+    try:
+        assert net.get_text("http://x")["undecodable"] is True
+        R.content = "héllo".encode("utf-8")
+        assert net.get_text("http://x") == {"text": "héllo", "cached": False}
+    finally:
+        net.httpx.Client = real
+
+
+def test_a_stale_read_never_replaces_what_was_typed(ed):
+    editor, files = ed
+    editor.open("a.md")
+    editor.revert()                                  # a second read of the same file
+    files.answer({"text": "v1\n", "cached": False}, n=2)
+    editor.text.setPlainText("typed\n")
+    files.answer({"text": "v0\n", "cached": False}, n=1)   # the older read, late
+    assert editor.text.toPlainText() == "typed\n"
+
+
+def test_a_discarded_edit_is_never_saved(ed):
+    editor, files = ed
+    _open(editor, files)
+    editor.text.setPlainText("to be discarded\n")
+    editor.save()                                    # its check is in flight
+    editor.answers.append(True)
+    editor.revert()                                  # discard it
+    files.answer({"text": "line one\nline two\n", "cached": False}, n=2)   # the old check
+    assert not any(c[0] == "write" for c in files.calls)
+
+
+def test_one_save_at_a_time(ed):
+    editor, files = ed
+    _open(editor, files)
+    editor.text.setPlainText("one\n")
+    editor.save()
+    editor.text.setPlainText("two\n")
+    editor.save()                                    # Ctrl+S again, mid-save
+    assert [c[0] for c in files.calls] == ["read", "read"]
+    assert editor.is_busy() and not editor.save_button.isEnabled()
+
+
+def test_opening_the_open_file_is_not_a_reload(ed):
+    editor, files = ed
+    _open(editor, files)
+    editor.text.setPlainText("typed\n")
+    assert editor.open("pm/x/charter.md") is True
+    assert [c[0] for c in files.calls] == ["read"] and editor.text.toPlainText() == "typed\n"
+
+
+def test_an_owner_can_block_saving_while_ade_writes_the_package(ed):
+    editor, files = ed
+    _open(editor, files)
+    editor.text.setPlainText("mine\n")
+    editor.block_reason = "Ade is writing this package now."
+    editor.save()
+    assert [c[0] for c in files.calls] == ["read"]
+    assert editor.note.text() == "Ade is writing this package now."

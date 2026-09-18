@@ -16,8 +16,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMenu,
-    QSplitter, QStackedWidget, QSystemTrayIcon, QToolButton, QVBoxLayout,
-    QWidget,
+    QMessageBox, QSplitter, QStackedWidget, QSystemTrayIcon, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from ade_desktop.ade_status import brain_name, health_pill
@@ -83,7 +83,7 @@ class DesktopWindow(QMainWindow):
     def __init__(self, sections: list[Section], status, *, state_path: Path,
                  tray_available: bool | None = None,
                  quit_fn: Callable[[], None] | None = None,
-                 panel=None, parent=None) -> None:
+                 panel=None, confirm_quit=None, parent=None) -> None:
         super().__init__(parent)
         self.sections = list(sections)
         self.status = status
@@ -91,6 +91,7 @@ class DesktopWindow(QMainWindow):
         self._panel_width = PANEL_DEFAULT_W
         self._state_path = Path(state_path)
         self._quit_fn = quit_fn or QApplication.quit
+        self._confirm_quit = confirm_quit
         self._quitting = False
         self._last_health: str | None = None
         self._start_maximized = False
@@ -275,9 +276,31 @@ class DesktopWindow(QMainWindow):
         event.accept()
         self.quit_app()
 
+    def unsaved(self) -> list[str]:
+        """What quitting now would lose, from every section that can say."""
+        lost = []
+        for section in self.sections:
+            ask = getattr(section.widget, "unsaved", None)
+            if callable(ask):
+                try:
+                    lost += list(ask())
+                except Exception:  # noqa: BLE001 -- asking must not stop a quit
+                    log.exception("section %s could not say what is unsaved", section.name)
+        return lost
+
+    def _may_quit(self, lost: list[str]) -> bool:
+        question = ("Quit Ade and lose:\n\n- " + "\n- ".join(lost))
+        if self._confirm_quit is not None:
+            return bool(self._confirm_quit(question))
+        answer = QMessageBox.question(self, "Quit Ade?", question)
+        return answer == QMessageBox.StandardButton.Yes
+
     def quit_app(self) -> None:
         if self._quitting:
             return
+        lost = self.unsaved()
+        if lost and not self._may_quit(lost):
+            return                      # the review: quitting dropped unsaved edits
         self._quitting = True
         self.save_state()
         for section in self.sections:

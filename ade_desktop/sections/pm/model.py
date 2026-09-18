@@ -21,7 +21,6 @@ QA_DOCS = ("requirements.md", "test_plan.md", "test_suites.md", "test_cases.md",
            "analytics.md")
 FILLED = re.compile(r"^Fill status: filled$", re.M)
 SEVERITY_ORDER = {"act": 0, "check": 1}
-RISK_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def slug(name: str) -> str:
@@ -90,10 +89,6 @@ def for_project(rows: list[dict], name: str) -> list[dict]:
 
 def sort_findings(findings: list[dict]) -> list[dict]:
     return sorted(findings, key=lambda f: SEVERITY_ORDER.get(f.get("severity"), 9))
-
-
-def sort_risks(risks: list[dict]) -> list[dict]:
-    return sorted(risks, key=lambda r: (RISK_ORDER.get(r.get("severity"), 9), r.get("id", 0)))
 
 
 def name_from_file(filename: str) -> str:

@@ -19,6 +19,7 @@ cannot be recalled, and the status says so.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 
 from PySide6.QtCore import QObject, Signal
@@ -38,7 +39,7 @@ class AddProjectFlow(QObject):
     def __init__(self, pm, files, *, tmpdir=None, parent=None) -> None:
         super().__init__(parent)
         self.pm, self.files = pm, files
-        self._tmpdir = tmpdir or tempfile.gettempdir()
+        self._tmpdir = tmpdir            # None: a private folder per run (mkdtemp)
         self._pending: dict[str, tuple] = {}
         self.intake: dict | None = None
         self.source = ""
@@ -47,7 +48,8 @@ class AddProjectFlow(QObject):
         self._stop = False
         self._run: dict | None = None       # the package being authored
         self._chain = False                 # QA follows PM (the web runs both)
-        self._pasted: str | None = None
+        self._pasted_dir: str | None = None
+        self.package_dir: str | None = None   # the folder Ade is writing into, while it does
         pm.done.connect(self._on_done)
         files.done.connect(self._on_done)
 
@@ -76,21 +78,37 @@ class AddProjectFlow(QObject):
             self.failed.emit("Choose a file or paste requirements text.")
             return False
         self.intake, self.notes, self._stop = None, notes or "", False
-        self._set_busy(True)
         if not file_path:
-            file_path = os.path.join(self._tmpdir, f"{model.slug(name)}-requirements.md")
-            with open(file_path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(pasted)
-            self._pasted = file_path
+            # A private folder per run: a fixed name in %TEMP% would overwrite,
+            # then delete, any file that happened to share it (review).
+            try:
+                self._pasted_dir = tempfile.mkdtemp(prefix="ade-desktop-req-",
+                                                    dir=self._tmpdir)
+                file_path = os.path.join(self._pasted_dir,
+                                         f"{model.slug(name)}-requirements.md")
+                with open(file_path, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(pasted)
+            except OSError as exc:
+                self._cleanup()
+                self.failed.emit(f"Could not stage the pasted text for upload: {exc}")
+                return False
+        self._set_busy(True)
         self.status.emit("Uploading requirements…")
         self._pending[self.files.upload(file_path)] = ("upload", name, mode)
         return True
 
     def stop(self) -> None:
+        """Honoured at every step: during the upload or the intake the flow
+        ends when that call answers (review: Stop used to be ignored until
+        authoring began, and all ~28 documents then ran)."""
+        if not self.busy:
+            return
+        self._stop = True
         if self._run is not None:
-            self._stop = True
             self.status.emit("Stopping after the document in flight — Ade OS "
                              "finishes that one; it cannot be recalled.")
+        else:
+            self.status.emit("Stopping when Ade OS answers the call in flight…")
 
     def rerun(self, pkg: str) -> bool:
         if self.busy or self.intake is None:
@@ -104,14 +122,20 @@ class AddProjectFlow(QObject):
         self.busy = busy
         self.busy_changed.emit(busy)
 
+    def _cleanup(self) -> None:
+        if self._pasted_dir:
+            shutil.rmtree(self._pasted_dir, ignore_errors=True)
+            self._pasted_dir = None
+
+    def close(self) -> None:
+        """At quit: nothing more is started, and the staged file goes."""
+        self._stop = True
+        self._cleanup()
+
     def _finish(self) -> None:
         self._run = None
-        if self._pasted:
-            try:
-                os.remove(self._pasted)
-            except OSError:
-                pass
-            self._pasted = None
+        self.package_dir = None
+        self._cleanup()
         self._set_busy(False)
 
     # -- the steps ----------------------------------------------------------------
@@ -121,6 +145,7 @@ class AddProjectFlow(QObject):
         docs = (model.pm_docs(intake.get("artifacts") or []) if pkg == "pm"
                 else list(model.QA_DOCS))
         self._run = {"pkg": pkg, "docs": docs, "i": 0, "failures": []}
+        self.package_dir = intake["dir"] if pkg == "pm" else intake["qa_dir"]
         self.package.emit(pkg, "running", "")
         self._next_doc()
 
@@ -142,8 +167,7 @@ class AddProjectFlow(QObject):
         if self._stop and done < len(docs):
             self.package.emit(pkg, "error", f"stopped after {done}/{len(docs)}; "
                               f"not authored: {', '.join(docs[done:])}")
-            self.status.emit("Stopped.")
-            self._finish()
+            self._stopped(pkg)
             return
         if failures:
             self.package.emit(pkg, "error", f"{len(docs) - len(failures)}/{len(docs)} "
@@ -174,12 +198,25 @@ class AddProjectFlow(QObject):
     def _after_package(self, pkg: str) -> None:
         """QA follows PM whatever PM's grade, as the web's run() does;
         a Re-run repeats one package only."""
-        if pkg == "pm" and self._chain and not self._stop:
+        if self._stop:
+            self._stopped(pkg)
+            return
+        if pkg == "pm" and self._chain:
             self._chain = False
             self._author("qa")
             return
         self._chain = False
         self.status.emit("Done — the counts are below; the artifacts are editable now.")
+        self._finish()
+
+    def _stopped(self, pkg: str | None) -> None:
+        """A Stop that cut the chain says so for the package it never
+        reached, so that package still gets a Re-run (review: after a Stop
+        near the end of PM, QA could never be run from the panel)."""
+        if pkg == "pm" and self._chain:
+            self.package.emit("qa", "error", "not started — Stop was pressed")
+        self._chain = False
+        self.status.emit("Stopped.")
         self._finish()
 
     # -- results ------------------------------------------------------------------
@@ -195,6 +232,12 @@ class AddProjectFlow(QObject):
                 self._fail(f"Upload failed: {error_cause(result)}")
                 return
             self.source = result["name"]
+            if self._stop:
+                self.status.emit("")
+                self.failed.emit(f"Stopped. Nothing was created; the upload stays at "
+                                 f"{self.source}.")
+                self._finish()
+                return
             if job[2] == "qa":
                 slug = model.slug(job[1])
                 self.intake = {"project": {"name": job[1]}, "slug": slug, "artifacts": [],
@@ -211,6 +254,13 @@ class AddProjectFlow(QObject):
                 return
             self.intake = result
             self.created.emit(result["project"]["name"])
+            if self._stop:
+                self.package.emit("pm", "error", "not started — Stop was pressed")
+                self.package.emit("qa", "error", "not started — Stop was pressed")
+                self.status.emit(f"Stopped. The project and its skeletons exist under "
+                                 f"{result['dir']}/; nothing was authored.")
+                self._finish()
+                return
             self.status.emit(f"Skeletons ready under {result['dir']}/ — authoring documents…")
             self._chain = True
             self._author("pm")

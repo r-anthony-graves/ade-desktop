@@ -22,11 +22,16 @@ BACKLOG = {"statuses": ["complete", "open"], "backlog": [
      "status": "complete", "resolution": "completed"},
     {"id": 3, "title": "Elsewhere", "detail": "", "project": "test", "status": "open",
      "resolution": ""}]}
+# Ade OS's real shape and order: severity is probability x impact (an int,
+# records/store.py), highest first -- the review found a fake with word
+# severities hid a re-sort that scrambled the register.
 RISKS = {"risks": [
-    {"id": 5, "title": "Sensor drift", "project": "Fuel Management", "probability": "low",
-     "impact": "low", "severity": "low", "response": "", "owner": "", "status": "open"},
     {"id": 6, "title": "Vendor late", "project": "Fuel Management", "probability": "high",
-     "impact": "high", "severity": "high", "response": "", "owner": "", "status": "open"}]}
+     "impact": "high", "severity": 9, "response": "", "owner": "", "status": "open"},
+    {"id": 7, "title": "Scope creep", "project": "Fuel Management", "probability": "medium",
+     "impact": "medium", "severity": 4, "response": "", "owner": "", "status": "open"},
+    {"id": 5, "title": "Sensor drift", "project": "Fuel Management", "probability": "low",
+     "impact": "low", "severity": 1, "response": "", "owner": "", "status": "open"}]}
 FINDINGS = {"findings": [
     {"domain": "planning", "severity": "check", "what": "empty backlog", "why": "w",
      "evidence": "e", "principle": "value", "subject": ""},
@@ -178,10 +183,12 @@ def test_adding_a_backlog_item_is_for_the_selected_project(rig):
     assert panel.backlog_title.text() == "New work"              # kept on failure
 
 
-def test_risks_sorted_by_severity_add_and_respond(rig):
+def test_risks_keep_ade_os_s_order_add_and_respond(rig):
     panel, pm, *_ = rig
     t = panel.risk_table
-    assert [t.item(r, 0).text() for r in range(t.rowCount())] == ["Vendor late", "Sensor drift"]
+    assert [t.item(r, 0).text() for r in range(t.rowCount())] == [
+        "Vendor late", "Scope creep", "Sensor drift"]
+    assert [t.item(r, 3).text() for r in range(t.rowCount())] == ["9", "4", "1"]
     panel.risk_title.setText("Budget cut")
     panel.risk_prob.setCurrentText("high")
     panel.risk_add.click()
@@ -199,7 +206,8 @@ def test_health_runs_the_cycle_when_opened_act_first(rig):
     pm.answer(FINDINGS, "findings")
     t = panel.health_table
     assert [t.item(r, 0).text() for r in range(t.rowCount())] == ["act", "check"]
-    assert panel.health_summary.text() == "2 findings, 1 needs action"
+    assert panel.health_summary.text().startswith("2 findings, 1 needs action")
+    assert "every live project" in panel.health_summary.text()
     assert "cost — no per-task cost" in panel.coverage.text()
 
 
@@ -252,3 +260,89 @@ def test_a_dropped_panel_is_freed_at_once(qapp, tmp_path):
         assert ref() is None
     finally:
         gc.enable()
+
+
+# -- the review's findings (2026-09-18) --------------------------------------------
+
+def test_health_with_nothing_measured_is_not_called_healthy(rig):
+    panel, pm, *_ = rig
+    panel.tabs.setCurrentIndex(3)
+    pm.answer({"findings": [], "summary": {"findings": 0}, "coverage": {},
+               "detail": "no records store configured"}, "findings")
+    assert panel.health_summary.text() == "Not measured: no records store configured."
+
+
+def test_a_listing_for_the_previous_project_is_dropped(rig):
+    panel, pm, files, active = rig
+    first = [i for i, c in enumerate(files.calls) if c == ("list", "pm/fuel-management")][-1]
+    active.set("test")                                     # switch before it answers
+    files.done.emit(f"fs{first + 1}", {"entries": [
+        {"name": "charter.md", "path": "pm/fuel-management/charter.md", "kind": "file"}]})
+    assert all(panel.pm_list.item(i).text() != "charter.md"
+               for i in range(panel.pm_list.count()))
+
+
+def test_a_listing_error_says_so_rather_than_empty(rig):
+    panel, pm, files, _ = rig
+    idx = [i for i, c in enumerate(files.calls) if c == ("list", "pm/fuel-management")][-1]
+    files.done.emit(f"fs{idx + 1}", {"error": "ConnectError: refused"})
+    assert panel.pm_list.item(0).text().startswith("Could not list it")
+
+
+def test_an_older_read_arriving_late_is_not_shown(rig):
+    panel, pm, *_ = rig
+    panel.refresh()                                        # read A
+    panel.backlog_title.setText("new")
+    panel.backlog_add.click()
+    pm.answer({"id": 99, "title": "new", "status": "open"}, "add_backlog")   # read B
+    newest = {"statuses": ["open"], "backlog": BACKLOG["backlog"] + [
+        {"id": 99, "title": "new", "detail": "", "project": "Fuel Management",
+         "status": "open", "resolution": ""}]}
+    pm.answer(newest, "backlog")                           # B answers first
+    a = [i for i, c in enumerate(pm.calls) if c == ("backlog",)][-2]
+    pm.done.emit(f"pm{a + 1}", BACKLOG)                    # then A, late
+    titles = [panel.backlog_table.item(r, 0).text()
+              for r in range(panel.backlog_table.rowCount())]
+    assert "new" in titles
+
+
+def test_stale_notes_do_not_outlive_their_cause(rig):
+    panel, pm, *_ = rig
+    panel.refresh()
+    pm.answer({"error": "ConnectError: refused"}, "risks")
+    assert "Could not load the risks" in panel.risk_note.text()
+    panel.refresh()
+    pm.answer(RISKS, "risks")
+    assert panel.risk_note.text() == ""
+
+
+def test_the_status_combo_is_not_an_optimistic_copy(rig):
+    panel, pm, *_ = rig
+    idx = panel.status_combo.findData("done")
+    panel.status_combo.setCurrentIndex(idx)
+    panel.status_combo.activated.emit(idx)
+    assert panel.status_combo.currentData() == "ongoing"   # what Ade OS last said
+    assert not panel.status_combo.isEnabled()
+    pm.answer({"id": 9, "status": "done"}, "set_status")
+    assert panel.status_combo.isEnabled()
+
+
+def test_while_ade_writes_a_package_its_documents_cannot_be_saved(rig):
+    panel, pm, files, _ = rig
+    panel.flow.package_dir = "pm/fuel-management"
+    panel.editor.open("pm/fuel-management/charter.md")
+    panel._label_groups()
+    assert "filling…" in panel.pm_label.text()
+    assert panel.editor.block_reason.startswith("Ade is writing this package")
+    panel.flow.package_dir = None
+    panel._label_groups()
+    assert panel.editor.block_reason == "" and "filling" not in panel.pm_label.text()
+
+
+def test_unsaved_names_what_quitting_would_lose(rig):
+    panel, pm, files, _ = rig
+    assert panel.unsaved() == []
+    panel.editor.open("pm/fuel-management/charter.md")
+    files.answer({"text": "a\n", "cached": False}, "read")
+    panel.editor.text.setPlainText("b\n")
+    assert panel.unsaved() == ["unsaved changes to pm/fuel-management/charter.md"]
