@@ -47,9 +47,13 @@ def test_wav_round_trips():
         assert w.getnframes() == 1600
 
 
-def test_downsample_length():
+def test_downsample_is_the_avatars_box_average():
     assert len(downsample([0.0] * 44100, 44100, 16000)) == 16000
     assert downsample([1.0, 2.0], 16000, 16000) == [1.0, 2.0]
+    assert downsample([1.0, 3.0, 5.0, 7.0], 32000, 16000) == [2.0, 6.0]
+    # a tone at the new Nyquist averages away rather than aliasing through
+    alt = [1.0, -1.0] * 100
+    assert max(abs(v) for v in downsample(alt, 32000, 16000)) == 0.0
 
 
 def test_rms_envelope_follows_loudness():
@@ -64,22 +68,31 @@ def test_silence_is_not_an_utterance():
     assert _feed(Segmenter(), _silence(2000)) == []
 
 
-def test_a_word_then_silence_is_one_utterance():
+def test_a_word_then_silence_is_one_utterance_hangover_included():
     got = _feed(Segmenter(), _tone(500) + _silence(HANG_MS + 200))
     assert len(got) == 1
     secs = len(got[0]) / RATE
-    assert 0.45 <= secs <= 0.5 + (HANG_MS + 40) / 1000
+    assert 0.5 + HANG_MS / 1000 - 0.03 <= secs <= 0.5 + (HANG_MS + 40) / 1000
 
 
-def test_a_blip_is_dropped():
+def test_a_short_word_is_sent_because_the_hangover_counts():
+    """The avatar measures MIN_MS on the whole segment: a bare "Ade." or
+    "yes" (200 ms) plus the 400 ms hang is 600 ms and is sent."""
     assert MIN_MS == 300
-    assert _feed(Segmenter(), _tone(200) + _silence(HANG_MS + 200)) == []
+    got = _feed(Segmenter(), _tone(200) + _silence(HANG_MS + 200))
+    assert len(got) == 1
 
 
-def test_a_long_noise_is_cut_at_the_ceiling():
+def test_under_the_minimum_is_dropped():
+    seg = Segmenter()
+    seg._hearing, seg._buf = False, [0.1] * int(RATE * 0.2)
+    assert seg._send(RATE) == []                 # 200 ms in all: a cough
+
+
+def test_a_long_noise_is_sent_whole_at_the_ceiling():
     assert MAX_MS == 12000
     got = _feed(Segmenter(), _tone(13000))
-    assert len(got) == 1 and abs(len(got[0]) / RATE - 12.0) < 0.1
+    assert len(got) == 1 and 12.0 < len(got[0]) / RATE <= 12.03
 
 
 def test_the_hangover_joins_close_words_and_splits_far_ones():
@@ -91,4 +104,4 @@ def test_the_hangover_joins_close_words_and_splits_far_ones():
 def test_segmentation_is_rate_independent():
     got = _feed(Segmenter(), _tone(500, rate=44100) + _silence(700, rate=44100),
                 rate=44100, block=882)
-    assert len(got) == 1 and abs(len(got[0]) / 44100 - 0.9) < 0.15
+    assert len(got) == 1 and abs(len(got[0]) / 44100 - 0.9) < 0.05

@@ -677,15 +677,23 @@ class ConversationPanel(QWidget):
 
     def stage(self, text: str, note: str | None = None, *, quiet: bool = False) -> bool:
         """Put `text` in the input for Enter, unsent. A draft already in the
-        box is never overwritten: the note says what was heard instead --
-        unless `quiet` (plain dictation, which an always-open microphone
-        hears all day: a note per overheard sentence would bury the chat)."""
+        box is never overwritten: the note says what was heard instead.
+
+        `quiet` is plain dictation, which an always-open microphone hears
+        all day: no note, no tab switch, and NO FOCUS -- placed only when
+        Chat is already showing and the box is empty (review, 2026-09-18:
+        focus moved into the box from wherever Ray was typing, so his next
+        Enter ran what the room said)."""
         draft = self.input.text().strip()
+        if quiet:
+            if self.current_tab() != "chat" or (draft and draft != text.strip()):
+                return False
+            self.input.setText(text)
+            return True
         if draft and draft != text.strip():
-            if not quiet:
-                self.set_tab("chat")
-                self._push("chat", "system", "staged",
-                           f"Heard: {text} (not placed: your draft in the box was kept).")
+            self.set_tab("chat")
+            self._push("chat", "system", "staged",
+                       f"Heard: {text} (not placed: your draft in the box was kept).")
             return False
         self.set_tab("chat")
         if note:

@@ -75,3 +75,13 @@ def test_state_dir_override_and_default(monkeypatch, tmp_path):
     monkeypatch.delenv("ADE_DESKTOP_STATE_DIR")
     monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
     assert state_dir() == tmp_path / "roaming" / "ade-desktop"
+
+
+def test_fit_inside_moves_a_rect_wholly_onto_its_screen():
+    from ade_desktop.geometry import Rect, fit_inside
+    screen = Rect(0, 0, 1920, 1040)
+    assert fit_inside(Rect(1800, 900, 480, 480), [screen]) == Rect(1440, 560, 480, 480)
+    assert fit_inside(Rect(-50, -20, 380, 380), [screen]) == Rect(0, 0, 380, 380)
+    assert fit_inside(Rect(100, 100, 380, 380), [screen]) == Rect(100, 100, 380, 380)
+    second = Rect(1920, 0, 1280, 1024)
+    assert fit_inside(Rect(3100, 900, 480, 480), [screen, second]) == Rect(2720, 544, 480, 480)

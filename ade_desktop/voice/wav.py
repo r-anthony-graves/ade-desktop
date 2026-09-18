@@ -10,22 +10,21 @@ import wave
 
 
 def downsample(samples, src_rate: int, dst_rate: int = 16000) -> list[float]:
-    """Linear interpolation to dst_rate (the avatar resamples to 16 kHz
-    before /v1/voice/listen)."""
+    """ptt.js's downsample(): each output sample is the MEAN of the input
+    samples it covers -- a crude low-pass, which linear interpolation is
+    not (review, 2026-09-18). Upsampling is never done: the input is
+    returned as it came."""
     samples = list(samples)
-    if src_rate == dst_rate or not samples:
+    if dst_rate >= src_rate or not samples:
         return samples
-    n_out = int(round(len(samples) * dst_rate / src_rate))
     ratio = src_rate / dst_rate
+    n_out = math.floor(len(samples) / ratio)    # as JS: floor(len / ratio)
     out = []
-    last = len(samples) - 1
     for i in range(n_out):
-        pos = i * ratio
-        j = int(pos)
-        frac = pos - j
-        a = samples[min(j, last)]
-        b = samples[min(j + 1, last)]
-        out.append(a + (b - a) * frac)
+        start = int(i * ratio)
+        end = min(len(samples), int((i + 1) * ratio))
+        n = end - start
+        out.append(sum(samples[start:end]) / n if n else 0.0)
     return out
 
 

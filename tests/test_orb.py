@@ -106,7 +106,7 @@ class Rig:
     free on whatever thread allocates next -- a worker's -- and Qt aborts
     (measured 2026-09-18, the full suite). Capture plain lists instead."""
 
-    def __init__(self, tmp_path, *, avatar=False, saved=None):
+    def __init__(self, tmp_path, *, avatar=False, saved=None, tray=False, listen=None):
         self.state = tmp_path / "window.json"
         if saved is not None:
             save_state(self.state, saved)
@@ -116,7 +116,7 @@ class Rig:
         self.status = FakeStatus()
         quits = self.quits = []
         self.win = DesktopWindow([Section("Trader", QLabel("t"))], self.status,
-                                 state_path=self.state, tray_available=False,
+                                 state_path=self.state, tray_available=tray,
                                  quit_fn=lambda: quits.append(1), panel=self.panel)
         self.device = FakeDevice()
         spoken = self.spoken = []
@@ -133,7 +133,7 @@ class Rig:
         self.mood = Mood()
         self.mic = MicListener(open_stream=self.device.open)
         self.voice = VoiceController(self.panel, base="http://ade",
-                                     listen=lambda *a: {"error": "unused"})
+                                     listen=listen or (lambda *a: {"error": "unused"}))
         self.ctl = OrbController(window=self.win, orb=self.orb, renderer=self.renderer,
                                  mood=self.mood, speaker=self.speaker, mic=self.mic,
                                  voice=self.voice, state_path=self.state,
@@ -181,6 +181,38 @@ def test_the_hit_test_passes_the_corners_and_takes_the_centre(qapp):
         assert orb.hit(QPoint(*p)) is False, p
 
 
+def test_faint_glow_passes_clicks_through_and_solid_takes_them(qapp):
+    """The backing glow is alpha 1..47 over much of the square: Windows only
+    passes alpha-0 clicks, so the orb decides itself (review finding)."""
+    orb = _framed_orb()
+    c = SIZES["M"] // 2
+    img = orb.frame
+    faint = next(QPoint(x, c) for x in range(4, c)
+                 if 0 < img.pixelColor(x, c).alpha() < 20
+                 and max(img.pixelColor(x + dx, c + dy).alpha()
+                         for dx in range(-6, 7) for dy in range(-6, 7)) < 48)
+    assert orb.should_pass_through(faint) is True
+    assert orb.should_pass_through(QPoint(c, c)) is False
+    assert orb.should_pass_through(QPoint(2, 2)) is True
+    assert orb.should_pass_through(QPoint(-5, c)) is True      # outside the window
+    orb._press = QPoint(0, 0)                                  # mid-drag: never
+    assert orb.should_pass_through(faint) is False
+
+
+def test_set_through_only_touches_the_style_on_a_change(qapp, monkeypatch):
+    from ade_desktop.orb import window as window_module
+    calls = []
+    monkeypatch.setattr(window_module, "set_input_transparent",
+                        lambda hwnd, through: calls.append(through) or True)
+    monkeypatch.setattr(window_module.QGuiApplication, "platformName",
+                        staticmethod(lambda: "windows"))
+    orb = OrbWindow()
+    orb.set_through(True)
+    orb.set_through(True)
+    orb.set_through(False)
+    assert calls == [True, False]
+
+
 def _mouse(kind, pos, button=Qt.MouseButton.LeftButton, global_pos=None):
     gp = QPointF(global_pos if global_pos is not None else pos)
     return QMouseEvent(kind, QPointF(pos), gp, button, button, Qt.KeyboardModifier.NoModifier)
@@ -212,15 +244,19 @@ def test_a_press_on_clear_pixels_is_ignored(qapp):
     assert not ev.isAccepted() and opened == []
 
 
-def test_a_dropped_orb_is_freed_at_once(qapp):
-    orb = _framed_orb()
-    orb.show()
-    ref = weakref.ref(orb)
+def test_a_dropped_orb_is_freed_at_once(qapp, tmp_path):
+    """The orb as the app wires it -- menus, signals, a started controller --
+    not a bare window with nothing connected (review finding)."""
+    r = Rig(tmp_path)
+    r.ctl.start(open_mic=False)
+    r.ctl.tick()
+    r.ctl.stop()
+    refs = [weakref.ref(o) for o in (r.orb, r.ctl, r.speaker, r.mic, r.voice)]
     gc.disable()
     try:
-        orb.hide()
-        del orb
-        assert ref() is None
+        r.orb = r.ctl = r.speaker = r.mic = r.voice = None
+        r.win.orb_controller = None
+        assert [ref() for ref in refs] == [None] * 5
     finally:
         gc.enable()
 
@@ -311,25 +347,54 @@ def test_replies_are_spoken_only_when_speaking_is_on(rig, pump):
     assert load_state(rig.state)["orb"]["speak"] is True
 
 
-def test_a_frame_is_drawn_while_shown_and_never_while_hidden(rig):
-    rig.ctl.start(open_mic=False)
-    rig.ctl.tick()
-    first = rig.orb.frame
-    assert first is not None and first.width() >= SIZES["M"]
-    rig.ctl.toggle_orb()
-    assert not rig.orb.isVisible() and rig.ctl.orb_act.text() == "Show orb"
-    rig.ctl.tick()
-    assert rig.orb.frame is first
-    assert load_state(rig.state)["orb"]["visible"] is False
+def test_a_frame_is_drawn_while_shown_and_never_while_hidden(qapp, tmp_path):
+    r = Rig(tmp_path, tray=True)
+    r.ctl.start(open_mic=False)
+    try:
+        r.ctl.tick()
+        first = r.orb.frame
+        assert first is not None and first.width() >= SIZES["M"]
+        r.ctl.toggle_orb()
+        assert not r.orb.isVisible() and r.ctl.orb_act.text() == "Show orb"
+        r.ctl.tick()
+        assert r.orb.frame is first
+        assert load_state(r.state)["orb"]["visible"] is False
+    finally:
+        r.ctl.stop()
 
 
-def test_the_size_changes_about_the_centre_and_is_remembered(rig):
+def test_with_no_tray_the_orb_cannot_be_hidden_for_good(qapp, tmp_path):
+    r = Rig(tmp_path, saved={"orb": {"visible": False}})
+    r.ctl.start(open_mic=False)
+    try:
+        assert r.orb.isVisible()                 # saved hidden, but nothing could show it
+        assert not r.ctl.orb_act.isEnabled()
+        r.ctl.toggle_orb()
+        assert r.orb.isVisible()
+    finally:
+        r.ctl.stop()
+
+
+def test_the_frame_rate_stretches_to_keep_the_ui_thread_free():
+    assert OrbController.interval_for(True, 10.0) == 42      # 24 fps when cheap
+    assert OrbController.interval_for(False, 10.0) == 66     # 15 fps at rest
+    assert OrbController.interval_for(True, 41.0) == 117     # 200% scaling: <= 35 %
+
+
+def test_the_size_changes_about_the_centre_and_stays_on_screen(rig):
+    from PySide6.QtGui import QGuiApplication
     rig.ctl.start(open_mic=False)
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    rig.orb.move(screen.center().x() - SIZES["M"] // 2, screen.center().y() - SIZES["M"] // 2)
     before = rig.orb.geometry().center()
     rig.ctl.size_acts["L"].trigger()
     assert rig.orb.width() == SIZES["L"]
     assert (rig.orb.geometry().center() - before).manhattanLength() <= 2
     assert load_state(rig.state)["orb"]["size"] == "L"
+    rig.ctl.size_acts["S"].trigger()             # from the bottom-right corner:
+    rig.orb.move(screen.right() - SIZES["S"], screen.bottom() - SIZES["S"])
+    rig.ctl.size_acts["L"].trigger()
+    assert screen.contains(rig.orb.geometry()), (screen, rig.orb.geometry())
 
 
 def test_orb_settings_and_window_state_share_window_json(qapp, tmp_path):
@@ -376,3 +441,46 @@ def test_the_controller_does_not_keep_the_main_window_alive(qapp, tmp_path):
         r.ctl.open_ade()                    # a late click finds no window: harmless
     finally:
         gc.enable()
+
+
+def test_muting_discards_speech_already_captured_and_silences_ade(qapp, tmp_path, pump):
+    import threading
+    gate = threading.Event()
+
+    def listen(url, body, timeout):
+        gate.wait(5)
+        return {"text": "Ade, what is pending", "engine": "whisper"}
+
+    r = Rig(tmp_path, listen=listen)
+    r.ctl.start()
+    try:
+        r.ctl.speak_act.setChecked(True)
+        r.mic.utterance.emit({"samples": [0.1] * 1600, "rate": 16000})   # in flight
+        r.mic.utterance.emit({"samples": [0.1] * 1600, "rate": 16000})   # waiting
+        hushed = []
+        r.speaker.hush = lambda: hushed.append(1)
+        r.ctl.mic_act.setChecked(False)
+        gate.set()
+        pump(lambda: not r.voice._inflight, timeout=3)
+        pump(lambda: False, timeout=0.2)
+        assert r.client.calls == []               # nothing asked after the mute
+        assert hushed and r.win.isHidden()
+    finally:
+        r.ctl.stop()
+
+
+def test_an_utterance_arriving_after_mute_is_dropped(rig):
+    rig.ctl.start()
+    rig.ctl.mic_act.setChecked(False)
+    rig.mic.utterance.emit({"samples": [0.1] * 1600, "rate": 16000})
+    assert rig.voice._inflight is False
+
+
+def test_ade_stop_silences_the_reply(rig):
+    rig.ctl.start(open_mic=False)
+    hushed = []
+    rig.speaker.hush = lambda: hushed.append(1)
+    rig.voice.hush_requested.disconnect()
+    rig.voice.hush_requested.connect(rig.speaker.hush)
+    assert rig.voice.on_text("Ade, stop.", "whisper") == "hushed"
+    assert hushed == [1] and rig.client.calls == []

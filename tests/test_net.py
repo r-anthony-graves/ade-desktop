@@ -11,7 +11,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from ade_desktop.net import get_json, post_bytes, post_file, post_json, stream_lines
+from ade_desktop.net import (get_json, get_text, post_bytes, post_file, post_json,
+                             request_json, stream_lines)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -24,11 +25,26 @@ class _Handler(BaseHTTPRequestHandler):
                  "blocking_reason": "memory down"}))
         elif self.path == "/html":
             self._send(200, "text/html", "<html>nope</html>")
+        elif self.path == "/text":
+            self._send(200, "text/plain; charset=utf-8", "plain text")
+        elif self.path == "/cached":
+            data = "fragment".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("X-QVM-Cached", "true")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         elif self.path == "/list":
             self._send(200, "application/json", "[1, 2]")
         else:
             self._send(404, "application/json",
                        json.dumps({"error": {"code": "not_found"}}))
+
+    def do_PATCH(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        self._send(200, "application/json", json.dumps({"method": "PATCH", "body": body}))
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
@@ -185,3 +201,17 @@ def test_post_bytes_refuses_json_as_audio(server):
 def test_post_bytes_unreachable_is_an_error():
     body = post_bytes(f"http://127.0.0.1:{_closed_port()}/v1/voice/speak", {}, 1.0)
     assert set(body) == {"error"}
+
+
+def test_request_json_sends_any_method_with_a_body(server):
+    assert request_json("PATCH", server + "/x", {"summary": None}, 5.0) == {
+        "method": "PATCH", "body": {"summary": None}}
+
+
+def test_get_text_says_when_the_text_is_the_index_copy(server):
+    assert get_text(server + "/text") == {"text": "plain text", "cached": False}
+    assert get_text(server + "/cached") == {"text": "fragment", "cached": True}
+
+
+def test_get_text_keeps_the_error_envelope(server):
+    assert get_text(server + "/nope")["status"] == 404

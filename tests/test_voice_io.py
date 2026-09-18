@@ -22,6 +22,7 @@ class FakeStream:
         self.active = True
         self.closed = False
         self.stopped = False
+        self.close_count = 0
 
     def stop(self):
         self.stopped = True
@@ -29,6 +30,7 @@ class FakeStream:
 
     def close(self):
         self.closed = True
+        self.close_count += 1
 
 
 class FakeDevice:
@@ -106,7 +108,9 @@ def test_no_microphone_is_a_signal_not_a_crash(qapp):
     assert "no default input device" in failures[0]
 
 
-def test_the_stream_does_not_keep_the_listener_alive(qapp):
+def test_a_dropped_listener_closes_its_own_stream(qapp):
+    """sounddevice has no __del__: a stream collected while PortAudio still
+    calls it is a native crash. The listener's finalizer closes it."""
     dev = FakeDevice()
     mic = MicListener(open_stream=dev.open)
     mic.start()
@@ -117,7 +121,64 @@ def test_the_stream_does_not_keep_the_listener_alive(qapp):
         assert ref() is None
     finally:
         gc.enable()
-    dev.push(_tone(40))                          # the stream outlived it: harmless
+    assert dev.stream.stopped and dev.stream.closed
+    dev.push(_tone(40))                          # a late block finds nobody: harmless
+
+
+def test_stop_then_drop_closes_once(qapp):
+    dev = FakeDevice()
+    mic = MicListener(open_stream=dev.open)
+    mic.start()
+    mic.stop()
+    del mic
+    gc.collect()
+    assert dev.stream.close_count == 1
+
+
+def test_a_dropped_device_is_reopened(qapp):
+    dev = FakeDevice()
+    mic = MicListener(open_stream=dev.open)
+    mic.start()
+    first = dev.stream
+    first.active = False                         # unplugged: PortAudio stopped it
+    assert not mic.running()
+    assert mic.start() is True and mic.running()
+    assert dev.opens == 2 and first.closed
+
+
+def test_a_stream_that_fails_to_start_is_closed():
+    from ade_desktop.voice import mic as mic_module
+
+    class Boom:
+        closed = False
+
+        def start(self):
+            raise OSError("device busy")
+
+        def close(self):
+            Boom.closed = True
+
+    class FakeSd:
+        @staticmethod
+        def query_devices(kind):
+            return {"default_samplerate": 16000}
+
+        @staticmethod
+        def RawInputStream(**kw):
+            return Boom()
+
+    import sys
+    real = sys.modules.get("sounddevice")
+    sys.modules["sounddevice"] = FakeSd
+    try:
+        with pytest.raises(OSError):
+            mic_module.open_default_stream(lambda *a: None)
+    finally:
+        if real is not None:
+            sys.modules["sounddevice"] = real
+        else:
+            del sys.modules["sounddevice"]
+    assert Boom.closed
 
 # -------------------------------------------------------------- the speaker
 

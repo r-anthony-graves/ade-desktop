@@ -24,12 +24,13 @@ from __future__ import annotations
 import base64
 import logging
 import re
-import threading
-import weakref
 
 from PySide6.QtCore import QObject, Signal
 
 from ade_desktop.ade_status import ade_base
+from ade_desktop.asyncclient import AsyncClient
+from ade_desktop.conversation.commands import COMMAND_NAMES
+from ade_desktop.conversation.router import route
 from ade_desktop.net import post_json
 from ade_desktop.voice.wake import strip_wake
 from ade_desktop.voice.wav import downsample, encode_wav
@@ -46,6 +47,9 @@ _DECISION = re.compile(
 DECISION_NOTE = ("Heard: {cmd} — approvals are click-only. Use Allow or Deny on "
                  "the card; the line is in the box if you meant to send it.")
 STAGED_NOTE = "Heard: {cmd} — press Enter to run it."
+# "Ade, stop" silences Ade's own voice; it is never staged or sent.
+_HUSH = re.compile(r"^(stop|quiet|be quiet|shush|hush|stop (talking|speaking)|"
+                   r"that's enough)[.!]*$", re.I)
 BUSY_NOTE = "Heard: {cmd} — Ade is still working; press Enter to send it after."
 
 
@@ -57,7 +61,7 @@ class VoiceController(QObject):
 
     wake_heard = Signal()        # the orb's wake: mood event + glyph arcs
     open_requested = Signal()    # show Ade with the panel open
-    _recognised = Signal(object)
+    hush_requested = Signal()    # "Ade, stop": silence the reply being spoken
 
     def __init__(self, panel, *, base=None, listen=post_json, parent=None) -> None:
         super().__init__(parent)
@@ -67,7 +71,19 @@ class VoiceController(QObject):
         self._inflight = False
         self._queued = None
         self._reported: set[str] = set()
-        self._recognised.connect(self._on_recognised)
+        self._gen = 0
+        self._gen_of: dict[str, int] = {}
+        # Recognition runs through the relay client: no worker ever holds
+        # this controller (review, 2026-09-18).
+        self._calls = AsyncClient(self)
+        self._calls.done.connect(self._on_done)
+
+    def discard(self) -> None:
+        """Mute: speech captured before it is never acted on -- neither the
+        utterance waiting nor the recognition in flight (review finding: it
+        used to pop the window up after the mic was off)."""
+        self._gen += 1
+        self._queued = None
 
     # -- utterance -> text ------------------------------------------------------
 
@@ -79,26 +95,23 @@ class VoiceController(QObject):
             return
         self._inflight = True
         listen, url = self._listen, self.base + "/v1/voice/listen"
-        wself = weakref.ref(self)
 
         def work():
-            try:
-                wav = encode_wav(downsample(utt["samples"], int(utt["rate"]), 16000), 16000)
-                result = listen(url, {"audio": base64.b64encode(wav).decode("ascii")},
-                                LISTEN_TIMEOUT_S)
-            except Exception as exc:  # noqa: BLE001
-                result = {"error": f"{type(exc).__name__}: {exc}"}
-            me = wself()
-            if me is not None:
-                me._recognised.emit(result)
-                del me
+            wav = encode_wav(downsample(utt["samples"], int(utt["rate"]), 16000), 16000)
+            return listen(url, {"audio": base64.b64encode(wav).decode("ascii")},
+                          LISTEN_TIMEOUT_S)
 
-        threading.Thread(target=work, name="ade-listen", daemon=True).start()
+        self._gen_of[self._calls.call(work)] = self._gen
 
-    def _on_recognised(self, result) -> None:
+    def _on_done(self, rid: str, result) -> None:
+        gen = self._gen_of.pop(rid, None)
+        if gen is None:
+            return
         self._inflight = False
         queued, self._queued = self._queued, None
         try:
+            if gen != self._gen:
+                return                          # captured before a mute
             if not isinstance(result, dict) or "error" in result:
                 self._report(result)
             else:
@@ -107,6 +120,10 @@ class VoiceController(QObject):
         finally:
             if queued is not None:
                 self.on_utterance(queued)
+
+    def stop(self) -> None:
+        self.discard()
+        self._calls.stop()
 
     def _report(self, result) -> None:
         err = result.get("error") if isinstance(result, dict) else result
@@ -132,7 +149,10 @@ class VoiceController(QObject):
         if cmd is None and WAKE_ONLY.match(text) and engine != "windows":
             cmd = ""
         if cmd is None:
-            if engine == "whisper":
+            # Overheard dictation lands in the box only if Chat would send it
+            # as a plain ask, and it never takes focus: an overheard "git push
+            # --force" must not be one stray Enter from running (review).
+            if engine == "whisper" and route(text, "chat", COMMAND_NAMES).kind == "ask":
                 return "typed" if self.panel.stage(text, quiet=True) else "ignored"
             return "ignored"
         self.wake_heard.emit()
@@ -140,6 +160,9 @@ class VoiceController(QObject):
         if not cmd:
             self.panel.focus_input()
             return "opened"
+        if _HUSH.match(cmd):
+            self.hush_requested.emit()
+            return "hushed"
         if _DECISION.match(cmd):
             self.panel.stage(cmd, DECISION_NOTE.format(cmd=cmd))
             return "staged"

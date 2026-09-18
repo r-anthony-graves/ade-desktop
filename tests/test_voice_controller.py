@@ -97,6 +97,41 @@ def test_overheard_dictation_never_touches_a_draft_or_writes_a_note(h):
     assert h.panel.input.text() == "my draft" and len(h.notes()) == before
 
 
+def test_overheard_dictation_never_takes_focus_or_changes_tab(h):
+    h.panel.set_tab("shell")
+    assert h.ctl.on_text("so what did you think", "whisper") == "ignored"
+    assert h.panel.current_tab() == "shell" and h.panel.input.text() == ""
+    h.panel.set_tab("chat")
+    focused = []
+    h.panel.input.setFocus = lambda *a: focused.append(1)   # offscreen has no focus to read
+    assert h.ctl.on_text("so what did you think", "whisper") == "typed"
+    assert h.panel.input.text() == "so what did you think" and focused == []
+    assert h.ctl.on_text("Ade, what did you think", "whisper") == "asked"
+    h.panel.input.clear()
+    assert h.ctl.on_text("Ade, !git status", "whisper") == "staged"
+    assert focused == [1]                                     # a woken line does take it
+
+
+@pytest.mark.parametrize("overheard", ["git push --force", "!rm -rf build", "/deploy now",
+                                        "clear the chat"])
+def test_overheard_lines_that_would_not_be_an_ask_are_never_placed(h, overheard):
+    assert h.ctl.on_text(overheard, "whisper") == "ignored"
+    assert h.panel.input.text() == "" and h.client.calls == []
+
+
+def test_voice_ask_itself_refuses_while_busy(h):
+    h.panel.send("first question")
+    assert h.panel.voice_ask("second question") is False
+    assert h.verbs() == ["ask"]
+
+
+def test_ade_stop_is_hushed_never_sent_or_staged(h):
+    heard = []
+    h.ctl.hush_requested.connect(lambda: heard.append(1))
+    assert h.ctl.on_text("Ade, stop talking", "whisper") == "hushed"
+    assert heard == [1] and h.client.calls == [] and h.panel.input.text() == ""
+
+
 def test_not_woken_windows_engine_is_ignored(h):
     assert h.ctl.on_text("open the pod bay doors", "windows") == "ignored"
     assert h.panel.input.text() == "" and h.client.calls == []
@@ -157,6 +192,7 @@ def test_a_busy_panel_stages_rather_than_sends(h):
     assert h.ctl.on_text("Ade, second question", "whisper") == "staged"
     assert h.verbs() == ["ask"]
     assert h.panel.input.text() == "second question"
+    assert "still working" in h.notes()[-1]         # the controller's own branch
 
 
 def test_a_staged_line_never_overwrites_a_draft(h):

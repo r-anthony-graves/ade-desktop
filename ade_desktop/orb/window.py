@@ -2,25 +2,51 @@
 transparent Tool window (no taskbar entry) that never takes keyboard focus.
 
 It only SHOWS frames and reports the pointer; OrbController decides what is
-drawn and what a click means. Transparent pixels belong to the window
-below: Windows hit-tests a per-pixel-alpha (layered) window by its alpha,
-so a fully clear pixel passes the click through with no mask at all -- a
-setMask() region would also CLIP the painting and cut the glow off. Inside
-the painted area, a press counts only where the frame is solid enough to
-aim at (alpha 48 within 5 px -- the avatar's numbers); a faint pixel
-ignores it.
+drawn and what a click means.
+
+Clicks go through wherever the orb is not solid enough to aim at (alpha 48
+within 5 px -- the avatar's numbers). Windows passes a click through a
+layered window only where alpha is exactly 0, and the backing glow is
+faint over ~46% of the square (measured, review 2026-09-18), so the orb
+polls the pointer ~30 times a second and flips its own WS_EX_TRANSPARENT
+style: solid under the pointer = clickable, faint = the window below gets
+the click. That is what Electron's setIgnoreMouseEvents does for the
+avatar. A setMask() region would CLIP the painting and cut the glow off.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QImage, QPainter
+import ctypes
+import logging
+
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor, QGuiApplication, QImage, QPainter
 from PySide6.QtWidgets import QWidget
+
+log = logging.getLogger("ade_desktop.orb.window")
 
 HIT_ALPHA = 48
 HIT_PAD = 5
 CLICK_SLOP = 6
+POINTER_MS = 33
 SIZES = {"S": 280, "M": 380, "L": 480}
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x20
+
+
+def set_input_transparent(hwnd: int, through: bool) -> bool:
+    """Our own window's extended style, nobody else's. False if it could
+    not be set (not Windows, or the call failed)."""
+    try:
+        user32 = ctypes.windll.user32
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        new = (style | WS_EX_TRANSPARENT) if through else (style & ~WS_EX_TRANSPARENT)
+        if new != style:
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new)
+        return True
+    except Exception:  # noqa: BLE001 -- clicks then behave as a plain window
+        log.exception("could not set click-through")
+        return False
 
 
 class OrbWindow(QWidget):
@@ -41,6 +67,10 @@ class OrbWindow(QWidget):
         self._press: QPoint | None = None
         self._origin: QPoint | None = None
         self._dragging = False
+        self.through = False            # clicks currently pass to the window below
+        self._pointer = QTimer(self)
+        self._pointer.setInterval(POINTER_MS)
+        self._pointer.timeout.connect(self.poll_pointer)
         self.set_orb_size(size)
 
     def set_orb_size(self, px: int) -> None:
@@ -77,6 +107,34 @@ class OrbWindow(QWidget):
                 if img.pixelColor(x, y).alpha() >= HIT_ALPHA:
                     return True
         return False
+
+    # -- click-through --------------------------------------------------------
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._pointer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._pointer.stop()
+        super().hideEvent(event)
+
+    def should_pass_through(self, local: QPoint) -> bool:
+        """Clicks at `local` belong to the window below unless the orb is
+        solid there. Never while a drag is in progress: flipping the style
+        mid-grab would drop the orb."""
+        if self._press is not None:
+            return False
+        return not (self.rect().contains(local) and self.hit(local))
+
+    def poll_pointer(self) -> None:
+        self.set_through(self.should_pass_through(self.mapFromGlobal(QCursor.pos())))
+
+    def set_through(self, through: bool) -> None:
+        if through == self.through:
+            return
+        self.through = through
+        if QGuiApplication.platformName() == "windows":
+            set_input_transparent(int(self.winId()), through)
 
     # -- pointer ------------------------------------------------------------
 

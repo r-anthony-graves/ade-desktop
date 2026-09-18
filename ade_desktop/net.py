@@ -64,6 +64,37 @@ def post_json(url: str, body: dict, timeout: float) -> dict:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def request_json(method: str, url: str, body: dict | None = None,
+                 timeout: float = 30.0) -> dict:
+    """Any method with an optional JSON body; the result read as post_json
+    reads it (from 400 up, the status travels with the error)."""
+    try:
+        with httpx.Client(trust_env=False, timeout=timeout) as client:
+            if body is None:
+                response = client.request(method, url)
+            else:
+                response = client.request(method, url, json=body)
+            return _result(response)
+    except Exception as exc:  # noqa: BLE001 -- unreachable is a state
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def get_text(url: str, timeout: float = 30.0) -> dict:
+    """A text body: {"text", "cached"} -- `cached` is True when Ade OS says
+    the text is its QVM index copy (X-QVM-Cached), which is NOT the file and
+    must never be saved back. From 400 up, the error envelope and status."""
+    try:
+        with httpx.Client(trust_env=False, timeout=timeout) as client:
+            response = client.get(url)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    if response.status_code >= 400:
+        return _result(response)
+    cached = response.headers.get("x-qvm-cached", "").lower() == "true"
+    return {"text": response.content.decode("utf-8", errors="replace"),
+            "cached": cached}
+
+
 def post_bytes(url: str, body: dict, timeout: float) -> dict:
     """POST JSON, expecting raw bytes back (/v1/voice/speak answers
     audio/wav, not base64): {"wav": bytes} -- or the usual error dict, the

@@ -39,8 +39,23 @@ def open_default_stream(callback):
     stream = sd.RawInputStream(samplerate=rate, channels=1, dtype="float32",
                                blocksize=max(1, int(rate * BLOCK_S)),
                                callback=callback)
-    stream.start()
+    try:
+        stream.start()
+    except Exception:
+        stream.close()      # an opened-but-unstarted stream still holds the device
+        raise
     return stream, rate
+
+
+def _close_quietly(stream) -> None:
+    """The finalizer: a listener dropped without stop() must still close its
+    stream. sounddevice 0.5.2 has no __del__, and a stream collected while
+    PortAudio still calls its callback is a native crash (review, 2026-09-18)."""
+    for step in ("stop", "close"):
+        try:
+            getattr(stream, step)()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _floats(indata) -> list[float]:
@@ -51,7 +66,7 @@ def _floats(indata) -> list[float]:
 
 class MicListener(QObject):
     utterance = Signal(object)   # {"samples": [float], "rate": int}
-    level = Signal(float)        # 0..1 (RMS x 5, capped)
+    level = Signal(object)       # float 0..1 (RMS x 5, capped); object: it crosses threads
     failed = Signal(str)         # the device could not be opened
 
     def __init__(self, open_stream=open_default_stream, clock=time.monotonic,
@@ -60,6 +75,7 @@ class MicListener(QObject):
         self._open = open_stream
         self._clock = clock
         self._stream = None
+        self._finalizer = None
         self._rate = 0
         self._lock = threading.Lock()
         self._seg = Segmenter()
@@ -71,7 +87,9 @@ class MicListener(QObject):
 
     def start(self) -> bool:
         if self._stream is not None:
-            return True
+            if self.running():
+                return True
+            self.stop()     # the device dropped: close the dead stream, reopen
         wself = weakref.ref(self)
 
         def callback(indata, frames, time_info, status):
@@ -89,6 +107,7 @@ class MicListener(QObject):
         with self._lock:
             self._seg.reset()
             self._stream, self._rate = stream, int(rate)
+        self._finalizer = weakref.finalize(self, _close_quietly, stream)
         log.info("microphone open at %s Hz", rate)
         return True
 
@@ -97,6 +116,9 @@ class MicListener(QObject):
         with self._lock:
             stream, self._stream = self._stream, None
             self._seg.reset()
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
         if stream is None:
             return
         for step in ("stop", "close"):

@@ -49,6 +49,20 @@ def clamp_to_screens(rect: Rect, screens: list[Rect]) -> Rect:
     return centred_on(screens[0], rect.w, rect.h)
 
 
+def fit_inside(rect: Rect, screens: list[Rect]) -> Rect:
+    """Move `rect` (not resize it) so it lies wholly on the screen holding
+    most of it. The orb grows about its centre; from a corner that pushed
+    the Large size ~76 px off-screen (review, 2026-09-18)."""
+    if not screens:
+        return rect
+    best = max(screens, key=lambda s: _overlap(rect, s)[0] * _overlap(rect, s)[1])
+    if _overlap(rect, best) == (0, 0):
+        best = screens[0]
+    x = min(max(rect.x, best.x), best.x + max(0, best.w - rect.w))
+    y = min(max(rect.y, best.y), best.y + max(0, best.h - rect.h))
+    return Rect(x, y, rect.w, rect.h)
+
+
 def state_dir() -> Path:
     """ADE_DESKTOP_STATE_DIR, or %APPDATA%\\ade-desktop. Tests and --smoke
     set the variable so they never touch the real window.json."""

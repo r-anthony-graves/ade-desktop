@@ -20,17 +20,20 @@ MAX_MS = 12000
 
 
 class Segmenter:
+    """ptt.js's live loop, rule for rule (review, 2026-09-18): MIN_MS is
+    measured on the WHOLE segment, hangover included, so a short word
+    followed by the 400 ms hang is sent, never dropped; past MAX_MS the
+    segment is sent whole and listening starts over."""
+
     def __init__(self) -> None:
         self._buf: list[float] = []
         self._hearing = False
         self._quiet_ms = 0.0
-        self._voiced_ms = 0.0
         self.last_rms = 0.0
 
     def feed(self, block, rate: int) -> list[list[float]]:
-        """One block of float samples at `rate`. Returns finished utterances
-        (each the samples from the first voiced block through the
-        hangover)."""
+        """One block of float samples at `rate`. Returns finished
+        utterances."""
         block = list(block)
         if not block:
             return []
@@ -41,27 +44,21 @@ class Segmenter:
         if rms >= SPEECH_RMS:
             self._hearing = True
             self._quiet_ms = 0.0
-            self._voiced_ms += ms
             self._buf.extend(block)
         elif self._hearing:
-            self._buf.extend(block)
             self._quiet_ms += ms
+            self._buf.extend(block)
             if self._quiet_ms >= HANG_MS:
-                out += self._finish(rate)
+                self._hearing, self._quiet_ms = False, 0.0
+                out += self._send(rate)
         if self._hearing and len(self._buf) * 1000.0 / rate > MAX_MS:
-            cut = int(rate * MAX_MS / 1000)
-            head, self._buf = self._buf[:cut], []
-            self._hearing = False
-            self._quiet_ms = self._voiced_ms = 0.0
-            out.append(head)
+            self._hearing, self._quiet_ms = False, 0.0
+            out += self._send(rate)
         return out
 
-    def _finish(self, rate: int) -> list[list[float]]:
-        samples, voiced = self._buf, self._voiced_ms
-        self._buf, self._hearing = [], False
-        self._quiet_ms = self._voiced_ms = 0.0
-        return [samples] if voiced >= MIN_MS else []
+    def _send(self, rate: int) -> list[list[float]]:
+        samples, self._buf = self._buf, []
+        return [samples] if len(samples) * 1000.0 / rate >= MIN_MS else []
 
     def reset(self) -> None:
-        self._buf, self._hearing = [], False
-        self._quiet_ms = self._voiced_ms = 0.0
+        self._buf, self._hearing, self._quiet_ms = [], False, 0.0

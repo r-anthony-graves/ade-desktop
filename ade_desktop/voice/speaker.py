@@ -16,14 +16,13 @@ import logging
 import os
 import re
 import tempfile
-import threading
 import time
-import weakref
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from ade_desktop.ade_status import ade_base
+from ade_desktop.asyncclient import AsyncClient
 from ade_desktop.net import post_bytes
 from ade_desktop.voice.wav import rms_envelope
 
@@ -78,7 +77,6 @@ class WinsoundPlayer:
 class Speaker(QObject):
     failed = Signal(str)          # one note per failure kind
     started = Signal(float)       # seconds of audio now playing
-    _fetched = Signal(object, int)
 
     def __init__(self, base=None, *, post=post_bytes, player=None,
                  clock=time.monotonic, tmpdir=None, parent=None) -> None:
@@ -93,7 +91,11 @@ class Speaker(QObject):
         self._start = 0.0
         self._file: Path | None = None
         self._reported: set[str] = set()
-        self._fetched.connect(self._on_fetched)
+        # The fetch runs through the relay client: no worker ever holds the
+        # speaker, so it can never be freed off the UI thread.
+        self._calls = AsyncClient(self)
+        self._calls.done.connect(self._on_done)
+        self._gen_of: dict[str, int] = {}
 
     # -- speaking -------------------------------------------------------------
 
@@ -104,21 +106,15 @@ class Speaker(QObject):
         if not spoken:
             return False
         self._gen += 1
-        gen, post, url = self._gen, self._post, self.base + "/v1/voice/speak"
-        wself = weakref.ref(self)
-
-        def work():
-            try:
-                result = post(url, {"text": spoken}, SPEAK_TIMEOUT_S)
-            except Exception as exc:  # noqa: BLE001
-                result = {"error": f"{type(exc).__name__}: {exc}"}
-            me = wself()
-            if me is not None:
-                me._fetched.emit(result, gen)
-                del me
-
-        threading.Thread(target=work, name="ade-speak", daemon=True).start()
+        post, url = self._post, self.base + "/v1/voice/speak"
+        rid = self._calls.call(lambda: post(url, {"text": spoken}, SPEAK_TIMEOUT_S))
+        self._gen_of[rid] = self._gen
         return True
+
+    def _on_done(self, rid: str, result) -> None:
+        gen = self._gen_of.pop(rid, None)
+        if gen is not None:
+            self._on_fetched(result, gen)
 
     def _on_fetched(self, result, gen: int) -> None:
         if gen != self._gen:
@@ -185,6 +181,7 @@ class Speaker(QObject):
 
     def close(self) -> None:
         self.hush()
+        self._calls.stop()
         self._remove(self._file)
         self._file = None
 

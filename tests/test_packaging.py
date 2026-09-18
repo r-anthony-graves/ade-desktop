@@ -21,6 +21,10 @@ def test_the_microphone_needs_no_numpy_and_no_qt_multimedia():
     numpy in, and Qt's audio would need the Addons wheel ruled out above."""
     import pathlib
     src = pathlib.Path(__file__).resolve().parents[1] / "ade_desktop" / "voice" / "mic.py"
+    import re
     text = src.read_text(encoding="utf-8")
-    assert "RawInputStream" in text and "import numpy" not in text
+    code = re.sub(r'"""[\s\S]*?"""', "", text)      # a docstring naming it proves nothing
+    assert re.search(r"\bsd\.RawInputStream\(", code)
+    assert not re.search(r"\bsd\.InputStream\(", code)
+    assert "numpy" not in code
     assert importlib.util.find_spec("PySide6.QtMultimedia") is None
