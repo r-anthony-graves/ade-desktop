@@ -22,24 +22,30 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venv = Join-Path $here '.venv'
 $pythonw = Join-Path $venv 'Scripts\pythonw.exe'
 
-function Get-Redirectors {
-  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.ExecutablePath -and
-      $_.ExecutablePath.StartsWith($venv, [StringComparison]::OrdinalIgnoreCase) -and
-      $_.CommandLine -and $_.CommandLine -like '*-m ade_desktop*' -and
-      $_.CommandLine -notlike '*--smoke*'
-    }
+$scripts = Join-Path $venv 'Scripts'
+
+function Test-UnderVenv($path) {
+  return [bool]($path -and $path.StartsWith($venv, [StringComparison]::OrdinalIgnoreCase))
 }
 
+# Both processes are found by their OWN command line, which names this
+# venv's Scripts\ directory and `-m ade_desktop` -- the redirector's and the
+# child's are identical (measured on the live app, 2026-09-17). Never by
+# ParentProcessId alone: Windows reuses PIDs, and a process whose parent has
+# died keeps the dead PID. That day explorer.exe on this machine was the
+# "child" of a dead PID, and a launcher that happened to get that PID would
+# have had -Stop force-kill Explorer. Matching by command line also finds an
+# app whose launcher has died.
 function Get-AppProcs {
-  $parents = @(Get-Redirectors)
-  $children = @()
-  if ($parents.Count -gt 0) {
-    $ids = @($parents | ForEach-Object { $_.ProcessId })
-    $children = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object { $ids -contains $_.ParentProcessId })
-  }
+  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.CommandLine -and
+      $_.CommandLine.IndexOf($scripts, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+      $_.CommandLine -like '*-m ade_desktop*' -and
+      $_.CommandLine -notlike '*--smoke*'
+    })
+  $parents = @($all | Where-Object { Test-UnderVenv $_.ExecutablePath })
+  $children = @($all | Where-Object { -not (Test-UnderVenv $_.ExecutablePath) })
   return [pscustomobject]@{ Children = $children; Parents = $parents }
 }
 
