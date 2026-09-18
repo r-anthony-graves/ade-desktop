@@ -12,10 +12,12 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMenu,
-    QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QSystemTrayIcon, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from ade_desktop.ade_status import brain_name, health_pill
@@ -31,6 +33,15 @@ log = logging.getLogger("ade_desktop.app")
 ICON_PATH = Path(__file__).resolve().parent.parent / "icon.png"
 DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
+PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
+
+
+def clamp_panel_width(value) -> int:
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return PANEL_DEFAULT_W
+    return max(PANEL_MIN_W, min(PANEL_MAX_W, width))
 
 
 class Pill(QLabel):
@@ -72,10 +83,12 @@ class DesktopWindow(QMainWindow):
     def __init__(self, sections: list[Section], status, *, state_path: Path,
                  tray_available: bool | None = None,
                  quit_fn: Callable[[], None] | None = None,
-                 parent=None) -> None:
+                 panel=None, parent=None) -> None:
         super().__init__(parent)
         self.sections = list(sections)
         self.status = status
+        self.panel = panel
+        self._panel_width = PANEL_DEFAULT_W
         self._state_path = Path(state_path)
         self._quit_fn = quit_fn or QApplication.quit
         self._quitting = False
@@ -108,9 +121,16 @@ class DesktopWindow(QMainWindow):
         row.addSpacing(10)
         row.addWidget(self.brain_label)
         row.addStretch(1)
+        self.panel_toggle = QToolButton()
+        self.panel_toggle.setObjectName("panelToggle")
+        self.panel_toggle.setToolTip("Show or hide the Ade panel (Ctrl+Shift+A)")
+        self.panel_toggle.clicked.connect(self._toggle_panel)
+        self.panel_toggle.setVisible(panel is not None)
+        row.addWidget(self.panel_toggle)
         outer.addWidget(header)
 
-        body = QHBoxLayout()
+        main = QWidget()
+        body = QHBoxLayout(main)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         self.rail = QListWidget()
@@ -123,7 +143,22 @@ class DesktopWindow(QMainWindow):
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
         body.addWidget(self.rail)
         body.addWidget(self.stack, 1)
-        outer.addLayout(body, 1)
+        # rail + section | the conversation panel
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(main)
+        if panel is not None:
+            self.splitter.addWidget(panel)
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.setStretchFactor(1, 0)
+            panel.approval_needed.connect(self.raise_for_approval)
+            # Inside THIS window only: an app must not take an OS key (the
+            # avatar's lesson with Alt+Space).
+            self.panel_shortcut = QShortcut(
+                QKeySequence("Ctrl+Shift+A"), self,
+                context=Qt.ShortcutContext.WindowShortcut,
+                activated=self._toggle_panel)
+        outer.addWidget(self.splitter, 1)
         self.setCentralWidget(central)
 
         status.health.connect(self.apply_health)
@@ -148,6 +183,46 @@ class DesktopWindow(QMainWindow):
         for section in self.sections:
             if section.start is not None:
                 section.start()
+        if self.panel is not None:
+            self.panel.watcher.start()
+
+    # -- the conversation panel ---------------------------------------------
+
+    def panel_open(self) -> bool:
+        return self.panel is not None and not self.panel.isHidden()
+
+    def set_panel_open(self, open_: bool) -> None:
+        if self.panel is None:
+            return
+        if open_ and self.panel.isHidden():
+            self.panel.show()
+            total = sum(self.splitter.sizes()) or self.width()
+            width = clamp_panel_width(self._panel_width)
+            self.splitter.setSizes([max(1, total - width), width])
+        elif not open_ and not self.panel.isHidden():
+            self._remember_panel_width()
+            self.panel.hide()
+        self.panel_toggle.setText("Ade ◂" if self.panel_open() else "Ade ▸")
+
+    def _toggle_panel(self) -> None:
+        self.set_panel_open(not self.panel_open())
+
+    def _remember_panel_width(self) -> None:
+        if self.panel_open():
+            sizes = self.splitter.sizes()
+            if len(sizes) == 2 and sizes[1] > 0:
+                self._panel_width = clamp_panel_width(sizes[1])
+
+    def raise_for_approval(self, tool: str) -> None:
+        """A decision is waiting: an approval nobody sees times out as a
+        denial. Show and raise the window, open the panel (it has already
+        selected Chat), and if the window was hidden, say so from the tray."""
+        was_hidden = not self.isVisible()
+        self.show_and_raise()
+        self.set_panel_open(True)
+        if was_hidden and self.tray is not None:
+            self.tray.showMessage("Ade needs a decision", tool,
+                                  QSystemTrayIcon.MessageIcon.Warning, 10000)
 
     # -- header -------------------------------------------------------------
 
@@ -201,6 +276,13 @@ class DesktopWindow(QMainWindow):
                     section.stop()
                 except Exception:  # noqa: BLE001 -- quitting must finish
                     log.exception("stopping section %s failed", section.name)
+        if self.panel is not None:
+            for step in (self.panel.on_quit, self.panel.client.stop,
+                         self.panel.watcher.stop):
+                try:
+                    step()
+                except Exception:  # noqa: BLE001 -- quitting must finish
+                    log.exception("stopping the panel failed")
         self.status.stop()
         if self.tray is not None:
             self.tray.hide()
@@ -228,10 +310,13 @@ class DesktopWindow(QMainWindow):
 
     def save_state(self) -> None:
         g = self.normalGeometry() if self.isMaximized() else self.geometry()
+        self._remember_panel_width()
         save_state(self._state_path, {
             "x": g.x(), "y": g.y(), "w": g.width(), "h": g.height(),
             "maximized": self.isMaximized(),
             "section": self.current_section(),
+            "panel_open": self.panel_open(),
+            "panel_width": self._panel_width,
         })
 
     def _restore_state(self) -> None:
@@ -249,3 +334,8 @@ class DesktopWindow(QMainWindow):
         if names:
             self.rail.setCurrentRow(names.index(wanted) if wanted in names
                                     else 0)
+        if self.panel is not None:
+            self._panel_width = clamp_panel_width(
+                state.get("panel_width", PANEL_DEFAULT_W))
+            self.panel.hide()   # set_panel_open sizes it on the way back in
+            self.set_panel_open(state.get("panel_open", True) is not False)

@@ -140,6 +140,95 @@ def test_a_saved_position_on_a_vanished_monitor_is_pulled_back(
     assert g.width() == min(700, screen.width())
 
 
+class _Stoppable:
+    def __init__(self, log, name):
+        self.log, self.name = log, name
+
+    def start(self):
+        self.log.append(f"{self.name}.start")
+
+    def stop(self):
+        self.log.append(f"{self.name}.stop")
+
+
+class FakePanel(QLabel):
+    approval_needed = Signal(str)
+
+    def __init__(self, log):
+        super().__init__("panel")
+        self.log = log
+        self.client = _Stoppable(log, "client")
+        self.watcher = _Stoppable(log, "watcher")
+
+    def on_quit(self):
+        self.log.append("panel.on_quit")
+
+
+def _with_panel(tmp_path, *, tray=True):
+    log = []
+    panel = FakePanel(log)
+    status = FakeStatus()
+    win = DesktopWindow([Section("Trader", QLabel("t"))], status,
+                        state_path=tmp_path / "window.json",
+                        tray_available=tray, quit_fn=lambda: log.append("quit"),
+                        panel=panel)
+    return win, panel, log
+
+
+def test_the_panel_sits_on_the_right_of_a_splitter(qapp, tmp_path):
+    win, panel, _ = _with_panel(tmp_path)
+    assert win.splitter.widget(win.splitter.count() - 1) is panel
+    assert win.panel_open() is True
+    assert win.panel_toggle.text() == "Ade ◂"
+
+
+def test_the_toggle_and_the_shortcut_open_and_close_it(qapp, tmp_path):
+    from PySide6.QtCore import Qt
+
+    win, _, _ = _with_panel(tmp_path)
+    win.panel_toggle.click()
+    assert win.panel_open() is False and win.panel_toggle.text() == "Ade ▸"
+    # The shortcut belongs to THIS window only -- never application-wide,
+    # never a global hotkey.
+    assert win.panel_shortcut.context() == Qt.ShortcutContext.WindowShortcut
+    assert win.panel_shortcut.key().toString() == "Ctrl+Shift+A"
+    win.panel_shortcut.activated.emit()
+    assert win.panel_open() is True
+
+
+def test_panel_state_round_trips_and_the_width_is_clamped(qapp, tmp_path):
+    (tmp_path / "window.json").write_text(
+        '{"panel_open": false, "panel_width": 5000}', encoding="utf-8")
+    win, _, _ = _with_panel(tmp_path)
+    assert win.panel_open() is False
+    assert win._panel_width == 900
+    win.save_state()
+    saved = load_state(tmp_path / "window.json")
+    assert saved["panel_open"] is False and saved["panel_width"] == 900
+
+
+def test_an_approval_raises_the_window_and_opens_the_panel(qapp, tmp_path, monkeypatch):
+    win, panel, _ = _with_panel(tmp_path)
+    shown = []
+    monkeypatch.setattr(win.tray, "showMessage",
+                        lambda *a, **k: shown.append(a[:2]))
+    win.set_panel_open(False)
+    win.hide()
+    panel.approval_needed.emit("write_file")
+    assert win.isVisible() and win.panel_open()
+    assert shown == [("Ade needs a decision", "write_file")]
+    panel.approval_needed.emit("run_shell")     # already visible: no notice
+    assert len(shown) == 1
+
+
+def test_start_and_quit_include_the_panel(qapp, tmp_path):
+    win, _, log = _with_panel(tmp_path)
+    win.start()
+    assert "watcher.start" in log
+    win.quit_app()
+    assert log[-4:] == ["panel.on_quit", "client.stop", "watcher.stop", "quit"]
+
+
 def test_show_and_raise_shows_a_hidden_window(qapp, tmp_path):
     win, *_ = _window(tmp_path, tray=True)
     win.hide()

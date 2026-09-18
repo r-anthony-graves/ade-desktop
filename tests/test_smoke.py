@@ -38,6 +38,7 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     assert report["ok"] is True
     assert isinstance(report["ade_polled"], bool)
     assert report["sections"] == ["Trader"]
+    assert report["panel"] == {"tabs": ["Chat", "Shell"], "open": True}
     assert report["trader"] == "panel", report.get("trader_reason")
     assert set(report["trader_pills"]) == {
         "pill_desk", "pill_kraken", "pill_engine", "pill_mode"}

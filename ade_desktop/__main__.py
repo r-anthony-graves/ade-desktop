@@ -84,10 +84,18 @@ def connect_instance(guard, win) -> None:
 def build_window(*, state_path: Path, quit_fn=None):
     from ade_desktop.ade_status import AdeStatusClient
     from ade_desktop.app import DesktopWindow
+    from ade_desktop.conversation.approvals import ApprovalWatcher
+    from ade_desktop.conversation.client import ConversationClient
+    from ade_desktop.conversation.panel import ConversationPanel
+    from ade_desktop.conversation.threads import ThreadStore
     from ade_desktop.sections import build_sections
 
+    # threads.json sits beside window.json -- the smoke run passes a temp
+    # state_path, so it never touches the real conversation either.
+    store = ThreadStore(Path(state_path).with_name("threads.json"))
+    panel = ConversationPanel(ConversationClient(), ApprovalWatcher(), store)
     return DesktopWindow(build_sections(), AdeStatusClient(),
-                         state_path=state_path, quit_fn=quit_fn)
+                         state_path=state_path, quit_fn=quit_fn, panel=panel)
 
 
 def smoke_report(win) -> dict:
@@ -116,6 +124,9 @@ def smoke_report(win) -> dict:
                    "placeholder" if trader.placeholder_reason else "panel"),
         "trader_reason": trader.placeholder_reason if trader else None,
         "trader_pills": pills,
+        "panel": ({"tabs": [win.panel.tabs.tabText(i)
+                            for i in range(win.panel.tabs.count())],
+                   "open": win.panel_open()} if win.panel is not None else None),
     }
 
 
