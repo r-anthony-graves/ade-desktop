@@ -51,6 +51,13 @@ STAGED_NOTE = "Heard: {cmd} — press Enter to run it."
 _HUSH = re.compile(r"^(stop|quiet|be quiet|shush|hush|stop (talking|speaking)|"
                    r"that's enough)[.!]*$", re.I)
 BUSY_NOTE = "Heard: {cmd} — Ade is still working; press Enter to send it after."
+# Measured 2026-09-18 ("voice does not work"): with the whisper sidecar down,
+# Ade OS answers from the Windows grammar -- nine fixed phrases, none of them
+# "Ade" -- so no wake word can ever be heard, and nothing says why.
+FALLBACK_NOTE = ("Speech is on the Windows fallback: the whisper sidecar (127.0.0.1:1242) "
+                 "is not answering, and the fallback's fixed phrases cannot contain \"Ade\", "
+                 "so nothing you say will wake Ade. Start whisper with: "
+                 r"py -3.12 C:\Users\ray_g\own-stt\ownstt.py start")
 
 
 class VoiceController(QObject):
@@ -71,6 +78,7 @@ class VoiceController(QObject):
         self._inflight = False
         self._queued = None
         self._reported: set[str] = set()
+        self._fallback_noted = False
         self._gen = 0
         self._gen_of: dict[str, int] = {}
         # Recognition runs through the relay client: no worker ever holds
@@ -116,6 +124,7 @@ class VoiceController(QObject):
                 self._report(result)
             else:
                 self._reported.clear()
+                self._note_engine(result.get("engine"))
                 self.on_text(result.get("text"), result.get("engine"))
         finally:
             if queued is not None:
@@ -124,6 +133,15 @@ class VoiceController(QObject):
     def stop(self) -> None:
         self.discard()
         self._calls.stop()
+
+    def _note_engine(self, engine) -> None:
+        """Once per fallback spell: say why the wake word cannot work, and
+        say it again only after whisper has come back and gone again."""
+        if engine == "windows" and not self._fallback_noted:
+            self._fallback_noted = True
+            self.panel.note(FALLBACK_NOTE)
+        elif engine == "whisper":
+            self._fallback_noted = False
 
     def _report(self, result) -> None:
         err = result.get("error") if isinstance(result, dict) else result

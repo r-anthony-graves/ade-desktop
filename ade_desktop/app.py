@@ -34,6 +34,12 @@ ICON_PATH = Path(__file__).resolve().parent.parent / "icon.png"
 DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
 PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
+# Ray, 2026-09-18: "need a general chat not just trader pm and qa, add a
+# general". The rail's first section is Ade's conversation, full size -- the
+# SAME conversation as the side panel (one thread, one approvals flow), not
+# a second one: the panel moves into the General page while it is showing
+# and back beside the other sections when it is not.
+GENERAL = "General"
 
 
 def clamp_panel_width(value) -> int:
@@ -142,7 +148,17 @@ class DesktopWindow(QMainWindow):
         for section in self.sections:
             self.rail.addItem(section.name)
             self.stack.addWidget(section.widget)
+        self._in_general = False
+        self._side_open = True          # the side panel's own open state
+        if panel is not None:
+            self.general_page = QWidget()
+            self.general_page.setObjectName("generalPage")
+            self._general_box = QVBoxLayout(self.general_page)
+            self._general_box.setContentsMargins(0, 0, 0, 0)
+            self.rail.insertItem(0, GENERAL)
+            self.stack.insertWidget(0, self.general_page)
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.rail.currentRowChanged.connect(self._on_rail_row)
         body.addWidget(self.rail)
         body.addWidget(self.stack, 1)
         # rail + section | the conversation panel
@@ -199,11 +215,48 @@ class DesktopWindow(QMainWindow):
 
     # -- the conversation panel ---------------------------------------------
 
+    # -- General: the conversation, full size ---------------------------------
+
+    def _on_rail_row(self, row: int) -> None:
+        if self.panel is None:
+            return
+        if self.current_section() == GENERAL:
+            self._panel_to_general()
+        else:
+            self._panel_to_side()
+
+    def _panel_to_general(self) -> None:
+        if self._in_general:
+            return
+        self._side_open = self.panel_open()
+        self._remember_panel_width()
+        self._in_general = True
+        self._general_box.addWidget(self.panel)      # reparents it out of the splitter
+        self.panel.show()
+        self.panel_toggle.hide()
+
+    def _panel_to_side(self) -> None:
+        if not self._in_general:
+            return
+        self._in_general = False
+        self.splitter.addWidget(self.panel)
+        self.panel.hide()
+        self.panel_toggle.show()
+        self.set_panel_open(self._side_open)
+
     def panel_open(self) -> bool:
+        """The SIDE panel's state -- remembered, not measured, while the
+        panel is showing full size in General."""
+        if self._in_general:
+            return self._side_open
         return self.panel is not None and not self.panel.isHidden()
 
     def set_panel_open(self, open_: bool) -> None:
         if self.panel is None:
+            return
+        if self._in_general:
+            self._side_open = bool(open_)       # it is already in view, full size
+            self.panel_toggle.setText("Ade ◂" if self._side_open else "Ade ▸")
             return
         if open_ and self.panel.isHidden():
             self.panel.show()
@@ -370,13 +423,14 @@ class DesktopWindow(QMainWindow):
         rect = clamp_to_screens(rect, screens)
         self.setGeometry(rect.x, rect.y, rect.w, rect.h)
         self._start_maximized = bool(state.get("maximized"))
-        names = self.section_names()
-        wanted = state.get("section")
-        if names:
-            self.rail.setCurrentRow(names.index(wanted) if wanted in names
-                                    else 0)
         if self.panel is not None:
             self._panel_width = clamp_panel_width(
                 state.get("panel_width", PANEL_DEFAULT_W))
             self.panel.hide()   # set_panel_open sizes it on the way back in
             self.set_panel_open(state.get("panel_open", True) is not False)
+        # After the panel: selecting General moves the panel into it.
+        names = self.section_names()
+        wanted = state.get("section")
+        if names:
+            self.rail.setCurrentRow(names.index(wanted) if wanted in names
+                                    else 0)

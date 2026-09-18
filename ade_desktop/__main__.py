@@ -137,7 +137,9 @@ def smoke_report(win) -> dict:
             widget = getattr(trader.widget, attr, None)
             if widget is not None:
                 pills[attr] = widget.text()
-    registry = [s.name for s in win.sections]
+    # General (the conversation, full size) leads the rail when there is a panel.
+    registry = ((["General"] if win.panel is not None else [])
+                + [s.name for s in win.sections])
     trader_ok = trader is not None and (
         trader.placeholder_reason is not None or len(pills) == 4)
     # `ok` is the STRUCTURE only: DOWN is a correctly rendered state, so a

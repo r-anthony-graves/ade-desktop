@@ -177,6 +177,7 @@ def _with_panel(tmp_path, *, tray=True):
 
 def test_the_panel_sits_on_the_right_of_a_splitter(qapp, tmp_path):
     win, panel, _ = _with_panel(tmp_path)
+    win.show_section("Trader")                   # General holds it full size
     assert win.splitter.widget(win.splitter.count() - 1) is panel
     assert win.panel_open() is True
     assert win.panel_toggle.text() == "Ade ◂"
@@ -186,6 +187,7 @@ def test_the_toggle_and_the_shortcut_open_and_close_it(qapp, tmp_path):
     from PySide6.QtCore import Qt
 
     win, _, _ = _with_panel(tmp_path)
+    win.show_section("Trader")
     win.panel_toggle.click()
     assert win.panel_open() is False and win.panel_toggle.text() == "Ade ▸"
     # The shortcut belongs to THIS window only -- never application-wide,
@@ -254,3 +256,47 @@ def test_quit_asks_before_losing_unsaved_work(qapp, tmp_path):
     win._confirm_quit = lambda q: True
     win.quit_app()
     assert quits == [True]
+
+
+
+# -- General (Ray, 2026-09-18: "add a general") -------------------------------------
+
+def test_general_leads_the_rail_and_holds_the_conversation_full_size(qapp, tmp_path):
+    win, panel, _ = _with_panel(tmp_path)
+    assert win.section_names()[0] == "General"
+    assert win.current_section() == "General"            # the first thing Ray sees
+    assert panel.parent() is win.general_page and not panel.isHidden()
+    assert win.panel_toggle.isHidden()
+
+
+def test_leaving_general_puts_the_panel_back_as_it_was(qapp, tmp_path):
+    win, panel, _ = _with_panel(tmp_path)
+    win.show_section("Trader")
+    assert win.splitter.indexOf(panel) >= 0 and not panel.isHidden()
+    win.set_panel_open(False)
+    win.show_section("General")
+    assert panel.parent() is win.general_page and not panel.isHidden()
+    win.show_section("Trader")
+    assert win.splitter.indexOf(panel) >= 0 and panel.isHidden()   # still closed
+    assert win.panel_toggle.text() == "Ade ▸" and not win.panel_toggle.isHidden()
+
+
+def test_an_approval_in_general_needs_nothing_moved(qapp, tmp_path):
+    win, panel, _ = _with_panel(tmp_path)
+    win.raise_for_approval("run_shell")
+    assert panel.parent() is win.general_page and not panel.isHidden()
+
+
+def test_the_side_panel_s_state_is_what_is_saved_from_general(qapp, tmp_path):
+    from ade_desktop.geometry import load_state
+    win, panel, _ = _with_panel(tmp_path)
+    win.show_section("Trader")
+    win.set_panel_open(False)
+    win.show_section("General")
+    win.save_state()
+    state = load_state(tmp_path / "window.json")
+    assert state["section"] == "General" and state["panel_open"] is False
+    win2, panel2, _ = _with_panel(tmp_path)
+    assert win2.current_section() == "General" and not panel2.isHidden()
+    win2.show_section("Trader")
+    assert panel2.isHidden()                               # the side preference survived

@@ -249,3 +249,21 @@ def test_one_recognition_at_a_time_and_the_newest_waiting_wins(qapp, tmp_path, p
     gate.set()
     assert pump(lambda: len(heard) == 2 and not h.ctl._inflight)
     assert heard == [1600, 4800]
+
+
+
+def test_the_windows_fallback_says_once_why_nothing_wakes(qapp, tmp_path, pump):
+    """Measured 2026-09-18: whisper down -> the Windows grammar, which has
+    no "Ade" in it, so voice silently never worked."""
+    from ade_desktop.voice.controller import FALLBACK_NOTE
+    answers = iter([{"text": "run the tests", "engine": "windows"},
+                    {"text": "stop", "engine": "windows"},
+                    {"text": "Ade, hello", "engine": "whisper"},
+                    {"text": "stop", "engine": "windows"}])
+    h = Harness(tmp_path, listen=lambda *a: next(answers))
+    for _ in range(4):
+        h.ctl.on_utterance({"samples": [0.1] * 1600, "rate": 16000})
+        assert pump(lambda: not h.ctl._inflight)
+    notes = [n for n in h.notes() if n == FALLBACK_NOTE]
+    assert len(notes) == 2                      # once, then again after whisper came and went
+    assert "ownstt.py start" in FALLBACK_NOTE and "1242" in FALLBACK_NOTE
