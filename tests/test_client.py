@@ -138,7 +138,7 @@ def test_upload_reports_sent_and_failed(qapp, pump, tmp_path):
 
 def test_stop_returns_quickly_while_a_call_is_in_flight(qapp):
     def slow(url, body, timeout):
-        time.sleep(10)
+        time.sleep(3)
         return {}
 
     c = ConversationClient("http://ade", post=slow)
@@ -147,3 +147,55 @@ def test_stop_returns_quickly_while_a_call_is_in_flight(qapp):
     started = time.monotonic()
     c.stop()
     assert time.monotonic() - started < 2.5
+
+
+def test_quitting_mid_turn_does_not_keep_the_process_alive(tmp_path):
+    """Review finding: stop() returned in 2 s, but Python still waited for
+    the executor's worker at exit -- up to 45 min for an ask, forever for a
+    silent stream. Measured before the fix: 8.4 s for an 8 s fake call."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = (
+        "import os, time; os.environ['QT_QPA_PLATFORM']='offscreen'\n"
+        "from PySide6.QtCore import QCoreApplication\n"
+        "app = QCoreApplication([])\n"
+        "from ade_desktop.conversation.client import ConversationClient\n"
+        "def slow(url, body, timeout):\n"
+        "    time.sleep(20)\n"
+        "    return {}\n"
+        "c = ConversationClient('http://ade', post=slow)\n"
+        "c.ask('q', [], [])\n"
+        "time.sleep(0.1)\n"
+        "c.stop()\n"
+    )
+    repo = Path(__file__).resolve().parents[1]
+    started = time.monotonic()
+    proc = subprocess.run([sys.executable, "-c", code], cwd=str(repo),
+                          capture_output=True, text=True, timeout=60)
+    took = time.monotonic() - started
+    assert proc.returncode == 0, proc.stderr
+    assert took < 10, f"the process waited {took:.1f}s for an abandoned call"
+
+
+def test_a_client_dropped_mid_call_is_freed_on_the_main_thread(qapp, pump):
+    """No Qt object may be destroyed on a worker thread (the piece-1 lesson).
+    A worker that held the client strongly became its last owner."""
+    import threading
+
+    release = threading.Event()
+
+    def slow(url, body, timeout):
+        release.wait(5)
+        return {"ok": True}
+
+    freed_on = []
+    c = ConversationClient("http://ade", post=slow)
+    c.destroyed.connect(lambda *_: freed_on.append(threading.current_thread().name))
+    c.ask("q", [], [])
+    time.sleep(0.05)
+    del c
+    assert freed_on == ["MainThread"]
+    release.set()
+    pump(lambda: False, timeout=0.3)    # the worker ends quietly, no emit

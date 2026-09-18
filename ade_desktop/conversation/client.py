@@ -6,13 +6,23 @@ is created, parented or destroyed on a worker thread -- the piece-1 lesson
 cross-thread signal). Signals carry `object`, not `dict`: a `dict` signal is
 marshalled through Qt's variant map across threads, which is free to
 reshape what it carries.
+
+Workers are DAEMON threads holding only a WEAK reference to the client
+(review findings, 2026-09-18):
+- a ThreadPoolExecutor's workers are joined at interpreter exit, so quitting
+  mid-ask kept the process alive until the ask ended -- up to 45 minutes,
+  forever for a silent stream (measured: 20.7 s for a 20 s call);
+- a worker holding `self` became the client's last owner when the panel let
+  go, and the QObject was destroyed ON THE WORKER THREAD.
+A worker whose client is gone simply drops its result.
 """
 
 from __future__ import annotations
 
 import itertools
 import threading
-from concurrent.futures import ThreadPoolExecutor, wait
+import time
+import weakref
 
 from PySide6.QtCore import QObject, Signal
 
@@ -37,19 +47,23 @@ class ConversationClient(QObject):
         self.base = (base or ade_base()).rstrip("/")
         self._post, self._get = post, get
         self._upload, self._stream = upload, stream
-        self._pool = ThreadPoolExecutor(max_workers=4,
-                                        thread_name_prefix="ade-conv")
         self._ids = itertools.count(1)
-        self._futures: set = set()
+        self._threads: set[threading.Thread] = set()
+        self._lock = threading.Lock()
         self._stop_stream = threading.Event()
-        self._stopped = False
+        self._stopped = threading.Event()
 
     # -- plumbing -----------------------------------------------------------
 
     def _submit(self, fn) -> str:
+        """Run fn(rid) on a daemon thread. fn must not capture `self`: every
+        route below binds what it needs (the transport callable, the URL)
+        before it is handed over."""
         rid = f"r{next(self._ids)}"
-        if self._stopped:
+        if self._stopped.is_set():
             return rid
+        wself = weakref.ref(self)
+        threads, lock, stopped = self._threads, self._lock, self._stopped
 
         def work():
             try:
@@ -58,16 +72,26 @@ class ConversationClient(QObject):
                 result = {"error": f"{type(exc).__name__}: {exc}"}
             if not isinstance(result, dict):
                 result = {"error": "non-dict reply"}
-            self.done.emit(rid, result)
+            try:
+                if not stopped.is_set():
+                    me = wself()
+                    if me is not None:
+                        me.done.emit(rid, result)
+                        del me
+            finally:
+                with lock:
+                    threads.discard(threading.current_thread())
 
-        future = self._pool.submit(work)
-        self._futures.add(future)
-        future.add_done_callback(self._futures.discard)
+        thread = threading.Thread(target=work, name=f"ade-conv-{rid}",
+                                  daemon=True)
+        with lock:
+            threads.add(thread)
+        thread.start()
         return rid
 
     def _post_to(self, path, body, kind="default"):
-        url, timeout = self.base + path, TIMEOUTS[kind]
-        return lambda rid: self._post(url, body, timeout)
+        post, url, timeout = self._post, self.base + path, TIMEOUTS[kind]
+        return lambda rid: post(url, body, timeout)
 
     # -- the routes ---------------------------------------------------------
 
@@ -96,11 +120,14 @@ class ConversationClient(QObject):
         self._stop_stream.clear()
         url, body = self.base + "/v1/terminal/run", {"session": SESSION,
                                                      "cmd": cmd}
-        stop = self._stop_stream.is_set
+        stop, stream, wself = self._stop_stream.is_set, self._stream, weakref.ref(self)
 
         def go(rid):
-            return self._stream(url, body,
-                                lambda text: self.line.emit(rid, text), stop)
+            def on_line(text):
+                me = wself()
+                if me is not None:
+                    me.line.emit(rid, text)
+            return stream(url, body, on_line, stop)
         return self._submit(go)
 
     def stop_stream(self) -> None:
@@ -113,17 +140,18 @@ class ConversationClient(QObject):
         return self._submit(self._post_to("/v1/terminal/kill",
                                           {"session": SESSION}))
 
+    def _get_from(self, path, timeout):
+        get, url = self._get, self.base + path
+        return lambda rid: get(url, timeout)
+
     def health(self) -> str:
-        url = self.base + "/v1/health"
-        return self._submit(lambda rid: self._get(url, 5.0))
+        return self._submit(self._get_from("/v1/health", 5.0))
 
     def skills(self) -> str:
-        url = self.base + "/v1/skills"
-        return self._submit(lambda rid: self._get(url, 10.0))
+        return self._submit(self._get_from("/v1/skills", 10.0))
 
     def task_types(self) -> str:
-        url = self.base + "/v1/task-types"
-        return self._submit(lambda rid: self._get(url, 10.0))
+        return self._submit(self._get_from("/v1/task-types", 10.0))
 
     def decide(self, approval_id, allow) -> str:
         verb = "allowed" if allow else "denied"
@@ -133,13 +161,13 @@ class ConversationClient(QObject):
              "decided_by": "human"}))
 
     def upload(self, files, overwrite) -> str:
-        url = self.base + "/v1/upload"
+        url, upload = self.base + "/v1/upload", self._upload
         files = list(files)
 
         def go(rid):
             sent, bytes_, failed = 0, 0, []
             for f in files:
-                r = self._upload(url, f.full, {
+                r = upload(url, f.full, {
                     "relpath": f.rel,
                     "overwrite": "true" if overwrite else "false"},
                     TIMEOUTS["default"])
@@ -155,10 +183,14 @@ class ConversationClient(QObject):
         return self._submit(go)
 
     def stop(self) -> None:
-        """Cancel queued work; wait at most 2 s for work in flight. A long
-        ask is abandoned, not waited for -- Ade OS keeps going server-side,
-        and the panel's quit note says so."""
-        self._stopped = True
+        """No new calls, no more results; wait at most 2 s in total for work
+        in flight. A long ask is abandoned, not waited for -- Ade OS keeps
+        going server-side, and the panel's quit note says so. The daemon
+        threads never hold the process open at exit."""
+        self._stopped.set()
         self._stop_stream.set()
-        self._pool.shutdown(wait=False, cancel_futures=True)
-        wait(list(self._futures), timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        with self._lock:
+            running = list(self._threads)
+        for thread in running:
+            thread.join(max(0.0, deadline - time.monotonic()))

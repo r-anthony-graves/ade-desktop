@@ -5,12 +5,18 @@ has to reach Ray while the turn is still in flight.
 A poll that fails changes nothing. An unreachable Ade OS is not evidence that
 anything was decided, so no card is ever marked "answered elsewhere" because
 the network blinked.
+
+Each poll runs on a DAEMON thread holding only a weak reference to the
+watcher, and stop() waits at most 2 s (review findings, 2026-09-18: a
+ThreadPoolExecutor stop waited the whole request timeout on a hung Ade OS,
+and a worker could outlive -- and so destroy -- the watcher off the UI
+thread).
 """
 
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import weakref
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -28,11 +34,9 @@ class ApprovalWatcher(QObject):
         super().__init__(parent)
         self.base = (base or ade_base()).rstrip("/")
         self._get = get
-        self._pool = ThreadPoolExecutor(max_workers=1,
-                                        thread_name_prefix="ade-approvals")
         self._lock = threading.Lock()
-        self._inflight = False
-        self._stopped = False
+        self._inflight: threading.Thread | None = None
+        self._stopped = threading.Event()
         self._pending: dict[str, dict] = {}
         self._timer = QTimer(self)
         self._timer.setInterval(interval_ms)
@@ -44,31 +48,40 @@ class ApprovalWatcher(QObject):
         self.poll_now()
 
     def stop(self) -> None:
-        with self._lock:
-            self._stopped = True
+        self._stopped.set()
         self._timer.stop()
-        self._pool.shutdown(wait=True, cancel_futures=True)
+        with self._lock:
+            running = self._inflight
+        if running is not None:
+            running.join(2.0)
 
     def poll_now(self) -> None:
         with self._lock:
-            if self._stopped or self._inflight:
+            if self._stopped.is_set() or self._inflight is not None:
                 return
-            self._inflight = True
-        url = self.base + "/v1/approvals"
+            get, url = self._get, self.base + "/v1/approvals"
+            wself, lock, stopped = weakref.ref(self), self._lock, self._stopped
 
-        def work():
-            try:
-                body = self._get(url, 4.0)
-            except Exception as exc:  # noqa: BLE001
-                body = {"error": str(exc)}
-            finally:
-                with self._lock:
-                    self._inflight = False
-            self._polled.emit(body)
+            def work():
+                try:
+                    body = get(url, 4.0)
+                except Exception as exc:  # noqa: BLE001
+                    body = {"error": str(exc)}
+                me = wself()
+                if me is not None:
+                    with lock:
+                        me._inflight = None
+                    if not stopped.is_set():
+                        me._polled.emit(body)
+                    del me
 
-        self._pool.submit(work)
+            self._inflight = threading.Thread(target=work, name="ade-approvals",
+                                              daemon=True)
+            self._inflight.start()
 
     def _apply(self, body) -> None:
+        if self._stopped.is_set():
+            return
         if not isinstance(body, dict) or "error" in body \
                 or not isinstance(body.get("approvals"), list):
             return

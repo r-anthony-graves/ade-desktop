@@ -29,11 +29,28 @@ def test_appeared_and_vanished_semantics(qapp, pump):
     for step, want in enumerate(expected, 1):
         before = len(polls)
         w.poll_now()
-        assert pump(lambda: len(polls) > before and not w._inflight)
+        assert pump(lambda: len(polls) > before and w._inflight is None)
         pump(lambda: False, timeout=0.05)   # let the queued result land
         assert (appeared, vanished) == want, f"after poll {step}"
     w.stop()
     assert polls[0] == "http://ade/v1/approvals"
+
+
+def test_stop_is_bounded_while_a_poll_hangs(qapp):
+    """Review finding: stop() waited for the whole request timeout on a hung
+    Ade OS; the spec says at most 2 s."""
+    import time
+
+    def hung(url, timeout):
+        time.sleep(10)
+        return {"approvals": []}
+
+    w = ApprovalWatcher("http://ade", get=hung, interval_ms=60_000)
+    w.poll_now()
+    time.sleep(0.05)
+    started = time.monotonic()
+    w.stop()
+    assert time.monotonic() - started < 2.5
 
 
 def test_a_decided_row_is_not_pending(qapp, pump):
