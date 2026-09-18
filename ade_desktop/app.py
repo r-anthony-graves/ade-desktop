@@ -129,6 +129,12 @@ class DesktopWindow(QMainWindow):
         row.addSpacing(10)
         row.addWidget(self.brain_label)
         row.addStretch(1)
+        # Mute: shown once an orb (and so a microphone) is attached.
+        self.mic_button = QToolButton()
+        self.mic_button.setObjectName("micButton")
+        self.mic_button.setVisible(False)
+        row.addWidget(self.mic_button)
+        row.addSpacing(8)
         self.panel_toggle = QToolButton()
         self.panel_toggle.setObjectName("panelToggle")
         self.panel_toggle.setToolTip("Show or hide the Ade panel (Ctrl+Shift+A)")
@@ -186,6 +192,26 @@ class DesktopWindow(QMainWindow):
                                if tray_available is None else tray_available)
         self.tray = self._make_tray() if self.tray_available else None
         self._restore_state()
+
+    # -- the microphone -----------------------------------------------------
+
+    def attach_mic(self, controller) -> None:
+        """The header's Mute button drives the orb's microphone and shows
+        what it is REALLY doing -- the orb's own menu item stays in step,
+        because both go through the controller."""
+        self.mic_button.clicked.connect(controller.toggle_mic)
+        controller.mic_state.connect(self.show_mic)
+        self.mic_button.setVisible(True)
+        self.show_mic(controller.mic.running())
+
+    def show_mic(self, listening: bool) -> None:
+        self.mic_button.setText("Mute" if listening else "Unmute")
+        self.mic_button.setToolTip("Ade is listening for its name. Click to mute the microphone."
+                                   if listening else
+                                   "The microphone is off: Ade hears nothing. Click to unmute.")
+        self.mic_button.setProperty("muted", not listening)
+        self.mic_button.style().unpolish(self.mic_button)
+        self.mic_button.style().polish(self.mic_button)
 
     # -- sections -----------------------------------------------------------
 

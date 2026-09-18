@@ -47,6 +47,7 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     orb = report["orb"]
     assert orb["shown"] is True and orb["frame"] is not None
     assert orb["mic_open"] is False            # a smoke run never opens the mic
+    assert orb["mute_button"] == "Unmute"      # the header's button, wired and truthful
     assert orb["online"] is False and orb["mood"] == "dormant"   # Ade OS is DOWN here
     assert orb["png_written"] is True
     # The smoke run used ADE_DESKTOP_STATE_DIR, never the real directory.

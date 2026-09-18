@@ -28,7 +28,7 @@ import time
 import weakref
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QMenu
 
@@ -68,6 +68,7 @@ def _screens() -> list[Rect]:
 
 
 class OrbController(QObject):
+    mic_state = Signal(bool)        # the microphone IS (True) or is not listening
     def __init__(self, *, window, orb, renderer, mood, speaker, mic, voice,
                  state_path: Path, avatar_running: bool = False,
                  clock=time.monotonic, parent=None) -> None:
@@ -201,6 +202,7 @@ class OrbController(QObject):
             self._uncheck_mic()
         self._feed()
         self._timer.start()
+        self._announce_mic()
 
     def stop(self) -> None:
         self._timer.stop()
@@ -355,11 +357,25 @@ class OrbController(QObject):
             self.speaker.hush()         # and Ade stops talking too
             self.hear = 0.0
         self.save()
+        self._announce_mic()
+
+    def toggle_mic(self) -> None:
+        """The header's Mute button: flip what the microphone IS doing (not
+        what the menu last said), through the same path as the orb's menu."""
+        want = not self.mic.running()
+        self.mic_act.blockSignals(True)
+        self.mic_act.setChecked(want)
+        self.mic_act.blockSignals(False)
+        self.set_mic(want)
 
     def _uncheck_mic(self) -> None:
         self.mic_act.blockSignals(True)
         self.mic_act.setChecked(False)
         self.mic_act.blockSignals(False)
+        self._announce_mic()
+
+    def _announce_mic(self) -> None:
+        self.mic_state.emit(self.mic.running())
 
     def set_backing(self, on: bool) -> None:
         self.backing_on = bool(on)

@@ -484,3 +484,64 @@ def test_ade_stop_silences_the_reply(rig):
     rig.voice.hush_requested.connect(rig.speaker.hush)
     assert rig.voice.on_text("Ade, stop.", "whisper") == "hushed"
     assert hushed == [1] and rig.client.calls == []
+
+
+# -- the mute button (Ray, 2026-09-18: "i need a mute botton") ----------------
+
+def test_the_header_has_a_mute_button_that_mutes_and_unmutes(rig):
+    rig.win.attach_mic(rig.ctl)
+    rig.ctl.start()
+    button = rig.win.mic_button
+    assert button.isVisibleTo(rig.win) and button.text() == "Mute"
+    button.click()
+    assert not rig.mic.running() and rig.device.stream.active is False
+    assert button.text() == "Unmute" and button.property("muted") is True
+    assert not rig.ctl.mic_act.isChecked()               # the orb's menu agrees
+    assert load_state(rig.state)["orb"]["mic"] is False  # and it is remembered
+    button.click()
+    assert rig.mic.running() and button.text() == "Mute" and rig.ctl.mic_act.isChecked()
+
+
+def test_the_orb_menu_and_the_button_stay_in_step(rig):
+    rig.win.attach_mic(rig.ctl)
+    rig.ctl.start()
+    rig.ctl.mic_act.setChecked(False)                    # muted from the orb's menu
+    assert rig.win.mic_button.text() == "Unmute"
+    rig.ctl.mic_act.setChecked(True)
+    assert rig.win.mic_button.text() == "Mute"
+
+
+def test_muted_for_the_avatar_the_button_says_unmute(qapp, tmp_path):
+    r = Rig(tmp_path, avatar=True)
+    r.win.attach_mic(r.ctl)
+    r.ctl.start()
+    try:
+        assert r.win.mic_button.text() == "Unmute"
+        r.win.mic_button.click()                         # Ray's explicit choice
+        assert r.mic.running() and r.win.mic_button.text() == "Mute"
+    finally:
+        r.ctl.stop()
+
+
+def test_a_microphone_that_will_not_open_leaves_the_button_on_unmute(qapp, tmp_path):
+    r = Rig(tmp_path)
+
+    def broken(callback):
+        raise OSError("no input device")
+
+    r.mic._open = broken                                 # the device is gone
+    r.win.attach_mic(r.ctl)
+    r.ctl.start()
+    try:
+        assert not r.mic.running() and r.win.mic_button.text() == "Unmute"
+        r.win.mic_button.click()
+        assert not r.mic.running() and r.win.mic_button.text() == "Unmute"
+        assert not r.ctl.mic_act.isChecked()
+    finally:
+        r.ctl.stop()
+
+
+def test_without_an_orb_there_is_no_mute_button(qapp, tmp_path):
+    win = DesktopWindow([Section("Trader", QLabel("t"))], FakeStatus(),
+                        state_path=tmp_path / "w.json", tray_available=False)
+    assert not win.mic_button.isVisibleTo(win)

@@ -29,6 +29,10 @@ QListWidget#rail::item { padding: 12px 16px; }
 QListWidget#rail::item:selected { background: #2a3442; color: #e8ebef;
                                   border-left: 3px solid #4f8cc9; }
 QLabel#placeholder { color: #d9a441; padding: 24px; font-size: 15px; }
+QToolButton#micButton { background: #262b33; border: 1px solid #333a45;
+                        border-radius: 3px; padding: 4px 14px; color: #d6d9de; }
+QToolButton#micButton[muted="true"] { background: #3a1f22; border-color: #d95757;
+                                      color: #ff8a8a; font-weight: 700; }
 """
 
 

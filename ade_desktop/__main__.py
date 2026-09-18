@@ -106,6 +106,7 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
             request.connect(win.show_section)
     if orb:
         win.orb_controller = build_orb(win, state_path, avatar_running)
+        win.attach_mic(win.orb_controller)
     return win
 
 
@@ -188,6 +189,7 @@ def run_smoke(app, args) -> int:
         "online": ctl.online,
         "mood": ctl.mood.frame().get("mood"),
         "mic_open": ctl.mic.running(),
+        "mute_button": win.mic_button.text() if win.mic_button.isVisibleTo(win) else None,
         "png_written": bool(frame is not None and frame.save(str(orb_png))),
         "png": str(orb_png.resolve()),
     }
