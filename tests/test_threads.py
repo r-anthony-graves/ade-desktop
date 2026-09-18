@@ -53,6 +53,68 @@ def test_a_corrupt_file_is_set_aside_not_lost(tmp_path):
     assert aside[0].read_text(encoding="utf-8") == "{not json"
 
 
+def _live(s, aid="a1"):
+    return s.push("chat", "ade", "approval", "",
+                  {"approval": {"id": aid, "tool": "write_file", "args": {}}})
+
+
+def test_clear_and_compact_never_archive_a_live_approval(tmp_path):
+    """Review finding (2026-09-18): /clear, /compact and clear-like lines
+    archived a pending approval card, and the watcher never re-announces an
+    id -- so the approval sat unseen until it timed out into a denial."""
+    s = ThreadStore(tmp_path / "t.json")
+    for i in range(25):
+        s.push("chat", "user", "ask", f"q{i}")
+    card = _live(s)                  # 26 messages: q0..q24, then the card
+    assert s.compact("chat") == 6    # q0..q5 go; the newest 20 stay
+    assert card in s.chat
+    assert s.clear("chat") == 19     # q6..q24 go; the live card stays
+    assert s.chat == [card]
+    assert s.clear("chat") == 0      # a live card alone is not "something to clear"
+
+
+def test_restore_never_brings_back_a_live_card(tmp_path):
+    s = ThreadStore(tmp_path / "t.json")
+    s.push("chat", "user", "ask", "q")
+    old = s.push("chat", "ade", "approval", "",
+                 {"approval": {"id": "old"}})
+    old["meta"]["moot"] = True        # it was answered elsewhere
+    s.clear("chat")
+    # an archive written by an older build could still hold an undecided card
+    s.archive[-1]["messages"].append(
+        {"id": "x", "ts": 1, "role": "ade", "kind": "approval", "text": "",
+         "meta": {"approval": {"id": "stale"}}})
+    s.restore()
+    restored = [m for m in s.chat if m["kind"] == "approval"]
+    assert all((m["meta"].get("moot") or m["meta"].get("decided"))
+               for m in restored)
+
+
+def test_an_undecodable_file_is_set_aside_not_fatal(tmp_path):
+    p = tmp_path / "threads.json"
+    p.write_bytes('{"chat": []}'.encode("utf-16"))
+    s = ThreadStore(p)
+    assert s.chat == [] and s.load_note
+    assert len(list(tmp_path.glob("threads.json.bad-*"))) == 1
+
+
+def test_malformed_messages_are_repaired_on_load(tmp_path):
+    p = tmp_path / "threads.json"
+    p.write_text(json.dumps({"chat": [
+        {"role": "user", "kind": "ask", "text": "no id"},
+        {"id": "m2", "role": "ade", "kind": "ask", "text": "x", "meta": "oops"},
+        "not a dict",
+        {"id": 7, "text": 5},
+    ]}), encoding="utf-8")
+    s = ThreadStore(p)
+    assert len(s.chat) == 3
+    for m in s.chat:
+        assert isinstance(m["id"], str) and m["id"]
+        assert isinstance(m["meta"], dict)
+        assert isinstance(m["text"], str)
+        assert isinstance(m["role"], str) and isinstance(m["kind"], str)
+
+
 def test_save_is_atomic(tmp_path, monkeypatch):
     import os
 

@@ -20,6 +20,38 @@ MAX_ARCHIVE = 20      # newest batches kept
 COMPACT_KEEP = 20
 
 
+def live_approval(m) -> bool:
+    """A card still waiting for a decision. It NEVER leaves the thread by
+    clear, compact or reset: the watcher announces an id once, so an
+    archived live card would sit unseen until it timed out -- and a timeout
+    denies (review finding, 2026-09-18)."""
+    meta = m.get("meta") or {}
+    return (m.get("kind") == "approval" and not meta.get("decided")
+            and not meta.get("moot"))
+
+
+def _stays(m) -> bool:
+    """Messages clear/compact leave in place: a running turn's working line,
+    and a live approval card."""
+    return m.get("kind") == "working" or live_approval(m)
+
+
+def _repair(m) -> dict | None:
+    """One loaded message made safe to render: a string id, a dict meta,
+    string role/kind/text. A non-dict is dropped."""
+    if not isinstance(m, dict):
+        return None
+    m = dict(m)
+    if not isinstance(m.get("id"), str) or not m["id"]:
+        m["id"] = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+    if not isinstance(m.get("meta"), dict):
+        m["meta"] = {}
+    for key, default in (("role", "system"), ("kind", "text"), ("text", "")):
+        if not isinstance(m.get(key), str):
+            m[key] = default if m.get(key) is None else str(m[key])
+    return m
+
+
 class ThreadStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -48,41 +80,55 @@ class ThreadStore:
         del self.archive[:-MAX_ARCHIVE]
 
     def clear(self, tab) -> int:
-        """Move the tab into the archive. A running turn's working line
-        stays: it belongs to a call that has not finished."""
+        """Move the tab into the archive. A running turn's working line and
+        every live approval card stay."""
         live = self.tab_messages(tab)
-        moved = [m for m in live if m.get("kind") != "working"]
+        moved = [m for m in live if not _stays(m)]
         if not moved:
             return 0
         self._archive_push(tab, moved)
-        live[:] = [m for m in live if m.get("kind") == "working"]
+        live[:] = [m for m in live if _stays(m)]
         return len(moved)
 
     def compact(self, tab) -> int | None:
         live = self.tab_messages(tab)
         if len(live) <= COMPACT_KEEP:
             return None
-        moved = live[:-COMPACT_KEEP]
+        head, tail = live[:-COMPACT_KEEP], live[-COMPACT_KEEP:]
+        moved = [m for m in head if not _stays(m)]
+        if not moved:
+            return None
         self._archive_push(tab, moved)
-        live[:] = live[-COMPACT_KEEP:]
+        live[:] = [m for m in head if _stays(m)] + tail
         return len(moved)
 
     def restore(self) -> tuple[str, int] | None:
+        """Put the newest archived batch back. Any approval card in it comes
+        back as answered-elsewhere, never live: whether it is still pending
+        is the watcher's to say."""
         if not self.archive:
             return None
         entry = self.archive.pop()
         tab = entry.get("tab") if entry.get("tab") in TABS else "chat"
-        messages = list(entry.get("messages") or [])
+        messages = [r for r in (_repair(m) for m in entry.get("messages") or [])
+                    if r is not None]
+        for m in messages:
+            if live_approval(m):
+                m["meta"]["moot"] = True
         self.tab_messages(tab)[:0] = messages
         return tab, len(messages)
 
     def _load(self) -> None:
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            raw = self.path.read_bytes()
         except OSError:
-            return
+            return        # no file yet: the ordinary first start
         try:
-            data = json.loads(raw)
+            # Decoding is inside the try: a UTF-16 file raises
+            # UnicodeDecodeError, a ValueError, and must be set aside like any
+            # other unreadable file -- never stop the app starting (review
+            # finding, 2026-09-18).
+            data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("not an object")
         except ValueError:
@@ -99,8 +145,9 @@ class ThreadStore:
             return
         for tab in TABS:
             if isinstance(data.get(tab), list):
-                setattr(self, tab, [m for m in data[tab]
-                                    if isinstance(m, dict)][-MAX_MESSAGES:])
+                repaired = [r for r in (_repair(m) for m in data[tab])
+                            if r is not None]
+                setattr(self, tab, repaired[-MAX_MESSAGES:])
         if isinstance(data.get("archive"), list):
             self.archive = [a for a in data["archive"]
                             if isinstance(a, dict)][-MAX_ARCHIVE:]

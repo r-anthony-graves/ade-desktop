@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ade_desktop.conversation.threads import COMPACT_KEEP
+from ade_desktop.conversation.threads import COMPACT_KEEP, live_approval
 
 
 @dataclass(frozen=True)
@@ -53,12 +53,6 @@ def help_text() -> str:
     return "\n".join(lines)
 
 
-def _live_approval(m) -> bool:
-    meta = m.get("meta") or {}
-    return (m.get("kind") == "approval" and not meta.get("decided")
-            and not meta.get("moot"))
-
-
 def run_local(verb, store, tab):
     """The commands that need no network. Returns the system note, or None
     for a command the panel must send through the client (health, search,
@@ -82,11 +76,9 @@ def run_local(verb, store, tab):
     if verb == "reset":
         # The avatar's /reset threw, and meant to hide pending approvals --
         # which would have let them time out into denials. A live card
-        # survives a reset: it still needs a decision.
-        live = [m for m in store.chat if _live_approval(m)]
-        store.chat[:] = [m for m in store.chat if not _live_approval(m)]
+        # survives a reset: ThreadStore.clear never archives one.
         moved = store.clear("chat") + store.clear("shell")
-        store.chat[:0] = live
+        live = [m for m in store.chat if live_approval(m)]
         store.skills = []
         note = (f"Reset: archived {moved} messages from both tabs and "
                 "detached all skills.")
