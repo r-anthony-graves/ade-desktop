@@ -16,7 +16,7 @@ import os
 from urllib.parse import quote
 
 from ade_desktop.asyncclient import AsyncClient
-from ade_desktop.net import get_json, request_json
+from ade_desktop.net import request_json
 
 DEFAULT_URL = "http://127.0.0.1:8412"
 TOKEN_HEADER = "X-Path-Token"
@@ -29,16 +29,22 @@ def path_base() -> str:
 
 
 class PathClient(AsyncClient):
-    def __init__(self, base=None, *, get=get_json, request=request_json, parent=None) -> None:
+    def __init__(self, base=None, *, request=request_json, parent=None) -> None:
         super().__init__(parent)
         self.base = (base or path_base()).rstrip("/")
-        self._get, self._request = get, request
+        self._request = request
         self._token = ""
 
     # -- the token: memory only ---------------------------------------------------
 
-    def set_token(self, token: str) -> None:
-        self._token = (token or "").strip()
+    def set_token(self, token: str) -> bool:
+        """False (and nothing held) for text that cannot be a token: The
+        Path prints hex, and a non-ASCII header cannot even be sent."""
+        token = (token or "").strip()
+        if not token or not token.isascii() or not token.isprintable():
+            return False
+        self._token = token
+        return True
 
     def forget_token(self) -> None:
         self._token = ""
@@ -52,8 +58,11 @@ class PathClient(AsyncClient):
     # -- plumbing -------------------------------------------------------------------
 
     def _read(self, path: str) -> str:
-        get, url = self._get, self.base + path
-        return self.call(lambda: get(url, 15.0))
+        # request_json, not get_json: a refusal keeps its status, so "The
+        # Path answered with an error" is never mistaken for "not running"
+        # (review, 2026-09-18).
+        request, url = self._request, self.base + path
+        return self.call(lambda: request("GET", url, None, 15.0))
 
     def _post(self, path: str, body: dict, gated: bool = False) -> str:
         request, url = self._request, self.base + path

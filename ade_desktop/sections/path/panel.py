@@ -35,10 +35,19 @@ def _ok(result) -> bool:
     return not failed(result)
 
 
+_TRANSPORT = ("ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout",
+              "PoolTimeout", "RemoteProtocolError", "LocalProtocolError", "NetworkError",
+              "ReadError", "WriteError", "TimeoutException")
+
+
 def _unreachable(result) -> bool:
-    """No answer at all -- as opposed to The Path answering with a refusal."""
-    return (isinstance(result, dict) and "error" in result and "status" not in result
-            and isinstance(result["error"], str))
+    """No answer at all -- a transport failure -- as opposed to The Path
+    answering with an error (which carries a status). A database outage
+    behind a running server is a 503 from The Path, not "not running"."""
+    if not isinstance(result, dict) or "status" in result:
+        return False
+    err = result.get("error")
+    return isinstance(err, str) and err.split(":", 1)[0].strip() in _TRANSPORT
 
 
 def _browser() -> QTextBrowser:
@@ -77,6 +86,7 @@ def _pretty(value, depth: int = 0) -> str:
 
 def today_text(d: dict) -> str:
     parts = [f"Stage: {d.get('stage') or '—'}"]
+    has_source = isinstance(d.get("source"), dict)
     cycle = d.get("cycle")
     if cycle:
         parts.append(f"Cycle: day {int(d.get('answered') or 0) + 1} of {d.get('of')} "
@@ -87,7 +97,9 @@ def today_text(d: dict) -> str:
         parts.append(f"Today: {d['summary']}")
     src = d.get("source")
     if isinstance(src, dict):
-        parts.append("\nSOURCE — " + str(src.get("attribution") or ""))
+        # The page's own reading of the attribution (cite.plainly, via
+        # source_plain): who, what and where -- not the machine addresses.
+        parts.append("\nSOURCE — " + str(d.get("source_plain") or src.get("attribution") or ""))
         parts.append(src.get("passage") or "We name this book, but we do not hold its text.")
         if src.get("passage_2"):
             parts.append(src["passage_2"])
@@ -97,10 +109,10 @@ def today_text(d: dict) -> str:
     prompt = d.get("prompt")
     if isinstance(prompt, dict):
         parts.append("\nTODAY'S PROMPT\n" + str(prompt.get("text") or ""))
-    elif d.get("offer_open"):
-        parts.append("\nA passage is offered above. Put it in your own words to keep it.")
+    elif has_source:
+        parts.append("\nPut the passage above in your own words to keep it as today's prompt.")
     else:
-        parts.append("\nNo prompt yet today.")
+        parts.append("\nNothing offered yet today.")
     thought = d.get("thought")
     if isinstance(thought, dict):
         parts.append("\nADE'S THOUGHT" + (f" — resting on {d['thought_source']}"
@@ -132,6 +144,7 @@ class PathPanel(QWidget):
         title = QLabel("The Path")
         title.setStyleSheet("font-size:15px;font-weight:600;")
         self.status = QLabel("")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         head.addWidget(title)
         head.addWidget(self.status, 1)
@@ -145,6 +158,7 @@ class PathPanel(QWidget):
         self.use_token = QPushButton("Use token")
         self.forget = QPushButton("Forget")
         self.token_state = QLabel("")
+        self.token_state.setTextFormat(Qt.TextFormat.PlainText)
         self.token_state.setStyleSheet(MUTED)
         row.addWidget(self.token_box, 1)
         row.addWidget(self.use_token)
@@ -152,6 +166,7 @@ class PathPanel(QWidget):
         row.addWidget(self.token_state)
         v.addLayout(row)
         self.message = QLabel("")
+        self.message.setTextFormat(Qt.TextFormat.PlainText)
         self.message.setWordWrap(True)
         v.addWidget(self.message)
         self.tabs = QTabWidget()
@@ -279,6 +294,7 @@ class PathPanel(QWidget):
         w = QWidget()
         v = QVBoxLayout(w)
         self.stage_label = QLabel("")
+        self.stage_label.setTextFormat(Qt.TextFormat.PlainText)
         self.stage_label.setStyleSheet("font-size:14px;")
         v.addWidget(self.stage_label)
         row = QHBoxLayout()
@@ -304,8 +320,12 @@ class PathPanel(QWidget):
     # -- token ------------------------------------------------------------------------
 
     def _on_use_token(self) -> None:
-        self.client.set_token(self.token_box.text())
+        ok = self.client.set_token(self.token_box.text())
         self.token_box.clear()                      # not left sitting in a widget
+        if not ok:
+            self.message.setText("That is not a token: The Path prints one as plain "
+                                 "letters and digits when `thepath serve` starts.")
+            self.message.setStyleSheet(ERR_STYLE)
         self._sync_token()
 
     def _on_forget(self) -> None:
@@ -338,6 +358,10 @@ class PathPanel(QWidget):
             return
         if _unreachable(result):
             self._down()
+            if job[0] == "acted":
+                self.message.setText("Not sent: The Path is not answering. What you "
+                                     "typed is still in its box.")
+                self.message.setStyleSheet(ERR_STYLE)
             return
         self.status.setText("The Path is running at " + self.client.base)
         self.status.setStyleSheet(MUTED)
@@ -369,11 +393,14 @@ class PathPanel(QWidget):
             return
         self.today = result
         self.today_view.setPlainText(today_text(result))
+        # The page's rule (views.today): a source and no prompt -> record it
+        # in your own words; no source -> Offer. The source may be the
+        # LESSON's citation, so "offer_open" alone was the wrong test.
         has_prompt = isinstance(result.get("prompt"), dict)
-        offer_open = bool(result.get("offer_open")) and not has_prompt
-        self.offer_button.setEnabled(not has_prompt and not offer_open)
-        self.prompt_box.setVisible(offer_open)
-        self.record_button.setVisible(offer_open)
+        has_source = isinstance(result.get("source"), dict)
+        self.offer_button.setEnabled(not has_prompt and not has_source)
+        self.prompt_box.setVisible(has_source and not has_prompt)
+        self.record_button.setVisible(has_source and not has_prompt)
 
     def _got_read(self, result) -> None:
         self.read_view.setPlainText(_entries_text(result.get("entries")) if _ok(result)
@@ -456,11 +483,17 @@ class PathPanel(QWidget):
 
     # -- actions ----------------------------------------------------------------------------
 
-    def _act(self, rid: str, *reread: str) -> None:
-        self._pending[rid] = ("acted", reread)
+    def _act(self, rid: str, *reread: str, clear=()) -> None:
+        self._pending[rid] = ("acted", reread, tuple(clear))
 
-    def _got_acted(self, result, reread) -> None:
+    def _got_acted(self, result, reread, clear=()) -> None:
+        """Typed text is cleared only once The Path has kept it: a refused
+        or failed write leaves it where it was (review: it was cleared on
+        send, and a failed write lost it)."""
         self._say(result)
+        if _ok(result) and result.get("ok"):
+            for box in clear:
+                box.clear()
         for kind in reread:
             call = {"today": self.client.today, "read": self.client.read_entries,
                     "diary": self.client.diary, "study": self.client.study,
@@ -471,15 +504,14 @@ class PathPanel(QWidget):
         body = self.entry_box.toPlainText()
         if not body.strip():
             return
-        self._act(self.client.write_entry(body), "today", "read")
-        self.entry_box.clear()
+        self._act(self.client.write_entry(body), "today", "read", clear=(self.entry_box,))
 
     def _on_diary(self) -> None:
         body = self.diary_box.toPlainText()
         if not body.strip():
             return
-        self._act(self.client.write_diary(body, self.diary_kind.currentText()), "diary", "read")
-        self.diary_box.clear()
+        self._act(self.client.write_diary(body, self.diary_kind.currentText()), "diary", "read",
+                  clear=(self.diary_box,))
 
     def _on_offer(self) -> None:
         self._act(self.client.offer(), "today")
@@ -491,16 +523,15 @@ class PathPanel(QWidget):
             return
         self._act(self.client.record_prompt(text, src.get("citation_id") or "",
                                             str(src.get("stage") or ""),
-                                            str(src.get("occasion") or "")), "today")
-        self.prompt_box.clear()
+                                            str(src.get("occasion") or "")), "today",
+                  clear=(self.prompt_box,))
 
     def _on_draft(self) -> None:
         title, subject = self.draft_title.text().strip(), self.draft_subject.text().strip()
         if not title:
             return
-        self._act(self.client.draft_teaching(title, subject), "study")
-        self.draft_title.clear()
-        self.draft_subject.clear()
+        self._act(self.client.draft_teaching(title, subject), "study",
+                  clear=(self.draft_title, self.draft_subject))
 
     def _on_claim(self) -> None:
         t = self.current_teaching
@@ -513,9 +544,7 @@ class PathPanel(QWidget):
 
         self._act(self.client.add_claim(t["teaching_id"], self.claim_category.currentText(),
                                         body, ids(self.claim_cites), ids(self.claim_drawn)),
-                  "study")
-        for box in (self.claim_body, self.claim_cites, self.claim_drawn):
-            box.clear()
+                  "study", clear=(self.claim_body, self.claim_cites, self.claim_drawn))
 
     def _gated(self, what: str) -> bool:
         if self.client.has_token():
