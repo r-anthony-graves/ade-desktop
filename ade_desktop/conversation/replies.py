@@ -66,6 +66,34 @@ def ask_reply(result) -> AskReply:
                     "It stays here — nothing was staged.")
 
 
+def error_cause(result) -> str:
+    """Why a call failed, worded the piece-1 way: an Ade OS error envelope,
+    an answer that was not what we asked for, no answer in time, or no
+    answer at all -- four different mornings."""
+    err = result.get("error") if isinstance(result, dict) else result
+    status = result.get("status") if isinstance(result, dict) else None
+    if isinstance(err, dict):
+        code = err.get("code") or "error"
+        message = err.get("message") or ""
+        head = f"HTTP {status}: {code}" if status else code
+        return f"{head} - {message}".rstrip(" -")
+    text = str(err or "no reply")
+    if text.startswith("HTTP "):
+        return text
+    if "Timeout" in text.split(":", 1)[0]:
+        return f"no answer in time: {text}"
+    return f"Ade OS unreachable: {text}"
+
+
+def task_types_from(result) -> list[str]:
+    """The task types Ade OS lists in its 400 unknown_task_type envelope
+    (detail.task_types), or [] when it did not say."""
+    err = result.get("error") if isinstance(result, dict) else None
+    detail = err.get("detail") if isinstance(err, dict) else None
+    types = detail.get("task_types") if isinstance(detail, dict) else None
+    return [str(t) for t in types] if isinstance(types, list) else []
+
+
 def health_text(payload) -> str:
     """Every subsystem Ade OS names, up or down -- never one word. The
     avatar's version replaced a literal that said 'all systems nominal'

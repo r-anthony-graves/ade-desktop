@@ -1,7 +1,30 @@
 """Reply text, ported from the avatar's readReply(), applyAskResult() and
 its /health formatter."""
 
-from ade_desktop.conversation.replies import ask_reply, health_text, read_reply
+from ade_desktop.conversation.replies import (
+    ask_reply, error_cause, health_text, read_reply, task_types_from,
+)
+
+
+def test_error_cause_wording():
+    assert error_cause({"error": "ConnectError: refused"}) == \
+        "Ade OS unreachable: ConnectError: refused"
+    assert error_cause({"error": "ReadTimeout: timed out"}) == \
+        "no answer in time: ReadTimeout: timed out"
+    assert error_cause({"error": "HTTP 502: not JSON", "status": 502}) == \
+        "HTTP 502: not JSON"
+    assert error_cause({"error": {"code": "execution_blocked",
+                                  "message": "memory down"},
+                        "status": 503}) == \
+        "HTTP 503: execution_blocked - memory down"
+
+
+def test_task_types_from_the_400_envelope():
+    result = {"error": {"code": "unknown_task_type", "message": "x",
+                        "detail": {"task_types": ["coding", "qa"]}},
+              "status": 400}
+    assert task_types_from(result) == ["coding", "qa"]
+    assert task_types_from({"error": "refused"}) == []
 
 
 def test_read_reply_order():
