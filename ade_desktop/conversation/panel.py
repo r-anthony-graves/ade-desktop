@@ -35,7 +35,9 @@ from ade_desktop.conversation.skills import (
     attach, detach, resolve_superpowers, skill_list_text,
 )
 from ade_desktop.conversation.uploads import report, walk
-from ade_desktop.conversation.widgets import ApprovalCard, SkillChips, message_widget
+from ade_desktop.conversation.widgets import (
+    SENDING, ApprovalCard, SkillChips, message_widget,
+)
 
 RENDER_WINDOW = 300
 TABS = ("chat", "shell")
@@ -268,6 +270,8 @@ class ConversationPanel(QWidget):
                 widget.set_outcome(str(meta["decided"]), live=False)
             elif meta.get("moot"):
                 widget.set_outcome("Answered elsewhere", live=False)
+            elif meta.get("deciding") is not None:
+                widget.set_outcome(SENDING, live=False)
             return
         if hasattr(widget, "setText"):
             widget.setText(msg.get("text") or "")
@@ -305,9 +309,12 @@ class ConversationPanel(QWidget):
         self._push("chat", "system", "text", note)
 
     def _route_ask(self, r, raw, tab) -> None:
-        history = thread_history(self.store.chat)
         self.set_tab("chat")
         self._push("chat", "user", "ask", raw)
+        # AFTER the push, as the avatar does: thread_history drops the
+        # trailing user line, which must be THIS question -- built first, it
+        # dropped an earlier unanswered question instead (review finding).
+        history = thread_history(self.store.chat)
         rid = self.client.ask(r.text, self.store.skills, history)
         self._start_turn(rid, "ask", "chat", raw)
 
@@ -419,9 +426,17 @@ class ConversationPanel(QWidget):
         return turn
 
     def _fail(self, turn, cause: str) -> None:
+        raw = turn.get("raw") or ""
+        draft = self.input.text().strip()
+        if draft and draft != raw.strip():
+            # Something was typed while the turn ran: never overwrite it.
+            self._push(turn["tab"], "ade", "error",
+                       f"Call failed: {cause}.\n\nThe failed line was: {raw}\n"
+                       "Your draft in the box was kept.")
+            return
         self._push(turn["tab"], "ade", "error", f"Call failed: {cause}.{RETRY}")
-        if turn.get("raw"):
-            self.input.setText(turn["raw"])
+        if raw:
+            self.input.setText(raw)
             self.input.setFocus()
 
     def _on_stop(self) -> None:
@@ -442,9 +457,12 @@ class ConversationPanel(QWidget):
         if kind == "out":
             piece = str(frame.get("text") or "")
             out["text"] = (out["text"] + "\n" + piece) if out["text"] else piece
-        elif kind == "exit" and frame.get("code") not in (0, None):
-            out["text"] += ("\n" if out["text"] else "") + f"[exit {frame.get('code')}]"
+        elif kind == "exit":
+            turn["ended"] = True
+            if frame.get("code") not in (0, None):
+                out["text"] += ("\n" if out["text"] else "") + f"[exit {frame.get('code')}]"
         elif kind == "error":
+            turn["ended"] = True
             out["text"] += ("\n" if out["text"] else "") + str(frame.get("text") or "")
         self._refresh(out)
 
@@ -473,6 +491,11 @@ class ConversationPanel(QWidget):
                     self._fail(turn, error_cause(result))
                     return
                 out["text"] += f"\n[stream ended: {error_cause(result)}]"
+            elif not turn.get("ended"):
+                # Closed without an exit or error frame: not a success we can
+                # vouch for (review finding).
+                out["text"] += (("\n" if out["text"] else "")
+                                + "[stream ended without an exit code]")
             if not out["text"]:
                 out["text"] = "(no output)"
             self._refresh(out)
@@ -486,6 +509,12 @@ class ConversationPanel(QWidget):
                           plan.skipped, [tuple(f) for f in result.get("failed", [])])
             failed_all = result.get("failed") and not result.get("sent")
             self._push(tab, "ade", "error" if failed_all else "text", text)
+            return
+        if kind == "shell" and "ok" in result and "status" not in result:
+            # /v1/terminal answered: {ok, exit_code, output, error}. A failed
+            # command is the command's answer, not a failed call.
+            text = str(result.get("output") or "") or str(result.get("error") or "")
+            self._push(tab, "ade", "shell", text or "(no output)")
             return
         if "error" in result:
             types = task_types_from(result) if kind == "task" else []
@@ -522,7 +551,10 @@ class ConversationPanel(QWidget):
                    "/superpowers for the process set.")
 
     def _done_kill(self, pending, result) -> None:
-        pass
+        if isinstance(result, dict) and "error" in result:
+            self._push("chat", "system", "text",
+                       f"Stop failed: {error_cause(result)}. The command may "
+                       "still be running in the shell session.")
 
     def _done_skills(self, pending, result) -> None:
         tab, verb, text = pending[1], pending[2], pending[3]
@@ -575,6 +607,14 @@ class ConversationPanel(QWidget):
         return None
 
     def _on_card_decided(self, approval_id: str, allow: bool) -> None:
+        msg = self._card_message(approval_id)
+        if msg is None:
+            return
+        meta = msg.setdefault("meta", {})
+        if meta.get("decided") or meta.get("moot") or meta.get("deciding") is not None:
+            return    # one decision per approval, however often it is drawn
+        meta["deciding"] = bool(allow)
+        self._refresh(msg)
         rid = self.client.decide(approval_id, allow)
         self._pending[rid] = ("decide", approval_id, allow)
 
@@ -584,8 +624,8 @@ class ConversationPanel(QWidget):
         if msg is None:
             return
         meta = msg.setdefault("meta", {})
+        meta.pop("deciding", None)
         err = result.get("error") if isinstance(result, dict) else "no reply"
-        widget = self._widgets.get(msg["id"])
         if err is None:
             meta["decided"] = f"{'Allowed' if allow else 'Denied'} {approval_id}"
         elif isinstance(err, dict) and err.get("code") == "already_decided":
@@ -593,6 +633,7 @@ class ConversationPanel(QWidget):
         else:
             # The buttons come back: an approval nobody can answer times out
             # as a denial.
+            widget = self._widgets.get(msg["id"])
             if isinstance(widget, ApprovalCard):
                 widget.set_outcome(
                     f"Could not decide {approval_id}: {error_cause(result)}", live=True)

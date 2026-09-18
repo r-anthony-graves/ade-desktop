@@ -216,6 +216,127 @@ def test_quit_mid_turn_leaves_a_note(qapp, tmp_path):
     assert "still running when the app quit" in saved.chat[-1]["text"]
 
 
+def _live_cards(panel):
+    return [m for m in panel.view_messages("chat") if m["kind"] == "approval"
+            and not m["meta"].get("decided") and not m["meta"].get("moot")]
+
+
+def test_nothing_clears_away_a_pending_approval(qapp, tmp_path):
+    """Review finding (HIGH): /clear, a clear-like line and an escalate-clear
+    archived the card, and the approval then timed out into a denial."""
+    panel, client, watcher, _ = _panel(tmp_path)
+    watcher.appeared.emit({"id": "a9", "tool": "write_file", "args": {}})
+    panel.send("/clear")
+    panel.send("new chat")
+    panel.send("please clear it all")
+    client.done.emit(f"r{len(client.calls)}",
+                     {"answer": "", "escalate": {"prompt": "clear the chat"}})
+    assert [m["meta"]["approval"]["id"] for m in _live_cards(panel)] == ["a9"]
+    assert _cards(panel) and _cards(panel)[0].allow.isEnabled()
+
+
+def test_a_decision_in_flight_survives_a_rerender(qapp, tmp_path):
+    """Review finding: switching tabs rebuilt the card with live buttons,
+    so one approval could be answered twice."""
+    panel, client, watcher, _ = _panel(tmp_path)
+    watcher.appeared.emit({"id": "a1", "tool": "write_file", "args": {}})
+    _cards(panel)[0].allow.click()
+    panel.set_tab("shell")
+    panel.set_tab("chat")
+    card = _cards(panel)[0]
+    assert card.allow.isHidden() and card.deny.isHidden()
+    assert "Sending" in card.outcome.text()
+    decides = [c for c in client.calls if c[0] == "decide"]
+    assert decides == [("decide", "a1", True)]
+    client.done.emit(f"r{len(client.calls)}", {"id": "a1", "allowed": True})
+    assert _cards(panel)[0].outcome.text() == "Allowed a1"
+
+
+def test_a_failed_decision_brings_the_buttons_back_even_after_a_rerender(qapp, tmp_path):
+    panel, client, watcher, _ = _panel(tmp_path)
+    watcher.appeared.emit({"id": "a1", "tool": "write_file", "args": {}})
+    _cards(panel)[0].deny.click()
+    panel.set_tab("shell")
+    panel.set_tab("chat")
+    client.done.emit(f"r{len(client.calls)}", {"error": "ConnectError: refused"})
+    card = _cards(panel)[0]
+    assert card.allow.isEnabled() and card.deny.isEnabled()
+
+
+def test_a_failure_keeps_a_draft_typed_during_the_turn(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("hello")
+    panel.input.setText("my next thought")
+    client.done.emit("r1", {"error": "ConnectError: refused"})
+    assert panel.input.text() == "my next thought"
+    assert "hello" in texts(panel)[-1]      # the failed line is still shown
+
+
+def test_ask_history_keeps_an_earlier_unanswered_question(qapp, tmp_path):
+    """The avatar pushes the question, THEN drops the trailing user line.
+    Building history first dropped an EARLIER unanswered question instead."""
+    panel, client, _, store = _panel(tmp_path)
+    store.push("chat", "user", "ask", "q-old")
+    panel.send("new q")
+    assert client.calls[0][3] == [{"role": "user", "content": "q-old"}]
+
+
+def test_a_failed_stop_is_reported(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("ping -t 1.1.1.1")
+    panel.stop_button.click()
+    kill_rid = f"r{len(client.calls)}"
+    client.done.emit(kill_rid, {"error": "ConnectError: refused"})
+    assert any("Stop failed" in t for t in texts(panel))
+
+
+def test_a_stream_without_an_exit_frame_says_so(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("git log")
+    client.line.emit("r1", '{"type":"out","text":"abc"}')
+    client.done.emit("r1", {"ok": True})
+    assert texts(panel)[-1] == "abc\n[stream ended without an exit code]"
+
+
+def test_a_stream_error_after_output_is_marked(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("git log")
+    client.line.emit("r1", '{"type":"out","text":"abc"}')
+    client.done.emit("r1", {"error": "RemoteProtocolError: peer closed"})
+    assert texts(panel)[-1].startswith("abc\n[stream ended: ")
+
+
+def test_a_stream_error_before_any_output_restages(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("git status")
+    client.done.emit("r1", {"error": "ConnectError: refused"})
+    kinds = [m["kind"] for m in panel.view_messages("chat")]
+    assert "inline" not in kinds and kinds[-1] == "error"
+    assert panel.input.text() == "git status"
+
+
+def test_a_shell_reply_that_reports_an_error_is_a_reply(qapp, tmp_path):
+    """/v1/terminal answers 200 {ok:false, error:...} for a command that
+    failed -- that is the command's answer, not a failed call."""
+    panel, client, _, _ = _panel(tmp_path)
+    panel.set_tab("shell")
+    panel.send("sleep 99")
+    client.done.emit("r1", {"ok": False, "output": "", "error": "timed out after 30s"})
+    assert texts(panel, "shell")[-1] == "timed out after 30s"
+    assert panel.view_messages("shell")[-1]["kind"] == "shell"
+    assert panel.input.text() == ""
+
+
+def test_an_upload_waits_for_the_turn(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("x")
+    panel.send("hello")
+    panel.upload_paths([str(f)])
+    assert [c[0] for c in client.calls] == ["ask"]
+    assert texts(panel)[-1] == BUSY_NOTE
+
+
 def test_a_dropped_panel_is_freed_at_once(qapp, tmp_path):
     """The piece-1 lesson: no lambda may capture the panel, or it becomes
     garbage the collector tears down at a random moment."""

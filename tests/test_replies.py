@@ -19,6 +19,20 @@ def test_error_cause_wording():
         "HTTP 503: execution_blocked - memory down"
 
 
+def test_a_reachable_server_is_never_called_unreachable():
+    """Review finding: Ade OS returns some errors as plain strings -- the 409
+    'session busy' from /v1/terminal/run, a 200 {ok:false, error} from
+    /v1/terminal. It answered; it is not 'unreachable'."""
+    assert error_cause({"error": "session busy", "status": 409}) == \
+        "HTTP 409: session busy"
+    assert error_cause({"ok": False, "error": "timed out after 30s"}) == \
+        "Ade OS said: timed out after 30s"
+    assert error_cause({"error": "RemoteProtocolError: peer closed"}) == \
+        "Ade OS unreachable: RemoteProtocolError: peer closed"
+    assert error_cause({"error": "ConnectTimeout: timed out"}) == \
+        "no answer in time: ConnectTimeout: timed out"
+
+
 def test_task_types_from_the_400_envelope():
     result = {"error": {"code": "unknown_task_type", "message": "x",
                         "detail": {"task_types": ["coding", "qa"]}},

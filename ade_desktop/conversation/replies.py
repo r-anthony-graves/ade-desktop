@@ -66,10 +66,15 @@ def ask_reply(result) -> AskReply:
                     "It stays here — nothing was staged.")
 
 
+_TRANSPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(Error|Exception|Timeout)$")
+
+
 def error_cause(result) -> str:
-    """Why a call failed, worded the piece-1 way: an Ade OS error envelope,
-    an answer that was not what we asked for, no answer in time, or no
-    answer at all -- four different mornings."""
+    """Why a call failed, worded apart: an Ade OS error envelope, a status
+    with a plain message, no answer in time, no answer at all -- and Ade OS
+    reporting an error in a normal reply. Only a transport exception (net.py
+    words those "<ExceptionClass>: <message>") is 'unreachable': a 409
+    'session busy' came FROM Ade OS (review finding, 2026-09-18)."""
     err = result.get("error") if isinstance(result, dict) else result
     status = result.get("status") if isinstance(result, dict) else None
     if isinstance(err, dict):
@@ -80,9 +85,14 @@ def error_cause(result) -> str:
     text = str(err or "no reply")
     if text.startswith("HTTP "):
         return text
-    if "Timeout" in text.split(":", 1)[0]:
-        return f"no answer in time: {text}"
-    return f"Ade OS unreachable: {text}"
+    head = text.split(":", 1)[0].strip()
+    if _TRANSPORT.match(head):
+        if "Timeout" in head:
+            return f"no answer in time: {text}"
+        return f"Ade OS unreachable: {text}"
+    if status:
+        return f"HTTP {status}: {text}"
+    return f"Ade OS said: {text}"
 
 
 def task_types_from(result) -> list[str]:

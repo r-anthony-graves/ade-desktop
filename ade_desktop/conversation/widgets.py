@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 ARGS_CLIP = 2000
+SENDING = "Sending the decision…"
 _STYLE = {
     "user": "background:#2a3442;color:#e8ebef;border-radius:8px;padding:6px 10px;",
     "ade": "background:#1e2126;color:#d6d9de;border-radius:8px;padding:6px 10px;",
@@ -102,6 +103,11 @@ class ApprovalCard(QFrame):
             self.set_outcome(str(meta["decided"]), live=False)
         elif meta.get("moot"):
             self.set_outcome("Answered elsewhere", live=False)
+        elif meta.get("deciding") is not None:
+            # A decision is in flight. It lives in the MESSAGE, not only on
+            # this widget, so a re-render cannot hand back live buttons and
+            # let the same approval be answered twice (review finding).
+            self.set_outcome(SENDING, live=False)
         else:
             self.outcome.hide()
 
