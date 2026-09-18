@@ -23,6 +23,7 @@ from ade_desktop.conversation.replies import error_cause
 from ade_desktop.sections.pm import model
 from ade_desktop.sections.pm.add_flow import AddProjectFlow
 from ade_desktop.workspace.editor import FileEditor
+from ade_desktop.workspace.files import is_missing
 
 ERROR_STYLE = "color:#d95757;"
 MUTED_STYLE = "color:#9aa1ab;"
@@ -610,7 +611,7 @@ class PmPanel(QWidget):
             return                              # a listing for the project before
         lst = self.pm_list if which == "pm" else self.qa_list
         lst.clear()
-        missing = isinstance(result, dict) and result.get("status") == 404
+        missing = is_missing(result)
         entries = [e for e in (result.get("entries") or []) if e.get("kind") == "file"] \
             if _ok(result) else []
         for e in entries:

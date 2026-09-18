@@ -175,7 +175,9 @@ def test_the_dashboard_counts_the_package_on_disk(rig):
 def test_a_package_folder_that_does_not_exist_is_zero_not_an_error(rig):
     panel, qa, pm, files, _ = rig
     go(panel, "dashboard")
-    files.answer_last("list", {"error": {"code": "not_found", "message": "x"}, "status": 404})
+    # Ade OS's real answer (measured live): the envelope, NO status field
+    files.answer_last("list", {"error": {"code": "not_found",
+                                         "message": "no directory at that path"}})
     assert "0 of 13" in panel.package_note.text()
 
 

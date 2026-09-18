@@ -29,6 +29,7 @@ from ade_desktop.sections.pm.add_flow import AddProjectFlow
 from ade_desktop.sections.pm.panel import ERROR_STYLE, MUTED_STYLE, TEXT_FILTER
 from ade_desktop.sections.qa import model
 from ade_desktop.workspace.editor import FileEditor
+from ade_desktop.workspace.files import is_missing
 
 STALE_S = 5.0
 NO_PROJECT = "No project is selected. Pick one in PM — the QA desk follows it."
@@ -418,7 +419,7 @@ class QaPanel(QWidget):
     def _got_package(self, result, slug: str) -> None:
         if slug != self._slug():
             return
-        missing_dir = isinstance(result, dict) and result.get("status") == 404
+        missing_dir = is_missing(result)
         if not _ok(result) and not missing_dir:
             self.package_note.setText(f"Could not read qa/{slug}/: {error_cause(result)}")
             return

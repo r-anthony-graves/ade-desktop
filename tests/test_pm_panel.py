@@ -226,8 +226,9 @@ def test_artifacts_listed_from_disk_open_in_the_editor(rig):
 def test_an_empty_package_says_so(rig):
     panel, pm, files, _ = rig
     idx = [i for i, c in enumerate(files.calls) if c == ("list", "qa/fuel-management")][-1]
-    files.done.emit(f"fs{idx + 1}", {"error": {"code": "not_found", "message": "x"},
-                                      "status": 404})
+    # Ade OS's real answer (measured live): the envelope, NO status field
+    files.done.emit(f"fs{idx + 1}", {"error": {"code": "not_found",
+                                               "message": "no directory at that path"}})
     assert panel.qa_list.item(0).text() == "No QA package yet."
 
 

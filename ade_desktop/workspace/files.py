@@ -20,6 +20,18 @@ from ade_desktop.net import get_json, get_text, post_file, request_json
 TIMEOUTS = {"list": 20.0, "read": 60.0, "write": 60.0, "upload": 120.0}
 
 
+def is_missing(result) -> bool:
+    """Ade OS said there is nothing at that path. /v1/fs answers through
+    get_json, which keeps the envelope but not the status -- measured live
+    2026-09-18: {"error": {"code": "not_found", ...}} with no "status" --
+    so the code is what says it, not a 404 the fakes had invented."""
+    if not isinstance(result, dict) or "error" not in result:
+        return False
+    err = result["error"]
+    return result.get("status") == 404 or (isinstance(err, dict)
+                                           and err.get("code") == "not_found")
+
+
 class FilesClient(AsyncClient):
     def __init__(self, base=None, *, get=get_json, text=get_text, request=request_json,
                  upload=post_file, parent=None) -> None:
