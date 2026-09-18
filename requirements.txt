@@ -1,0 +1,11 @@
+# Pinned to what D:\tradinglocal\.venv runs: the trader's widgets are
+# imported into this process, so the Qt build must be the one they were
+# written against. If tradinglocal upgrades PySide6, move this pin with it.
+#
+# PySide6-Essentials, NOT PySide6: the meta-package also installs
+# PySide6-Addons, which is where QtWebEngine lives. This app renders no
+# HTML (Ray, 2026-09-17: "fully native, no browser engine"), and leaving
+# Addons out makes that true of the venv, not just of the code.
+PySide6-Essentials==6.11.1
+httpx==0.28.1
+pytest==9.1.1
