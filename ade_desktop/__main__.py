@@ -90,13 +90,20 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     from ade_desktop.conversation.panel import ConversationPanel
     from ade_desktop.conversation.threads import ThreadStore
     from ade_desktop.sections import build_sections
+    from ade_desktop.workspace.active import ActiveProject
 
     # threads.json sits beside window.json -- the smoke run passes a temp
     # state_path, so it never touches the real conversation either.
     store = ThreadStore(Path(state_path).with_name("threads.json"))
     panel = ConversationPanel(ConversationClient(), ApprovalWatcher(), store)
-    win = DesktopWindow(build_sections(), AdeStatusClient(),
+    active = ActiveProject(state_path)
+    sections = build_sections(active)
+    win = DesktopWindow(sections, AdeStatusClient(),
                         state_path=state_path, quit_fn=quit_fn, panel=panel)
+    for section in sections:
+        request = getattr(section.widget, "section_requested", None)
+        if request is not None:
+            request.connect(win.show_section)
     if orb:
         win.orb_controller = build_orb(win, state_path, avatar_running)
     return win

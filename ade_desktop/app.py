@@ -179,6 +179,15 @@ class DesktopWindow(QMainWindow):
         item = self.rail.currentItem()
         return item.text() if item is not None else None
 
+    def show_section(self, name: str) -> bool:
+        """Switch the rail to `name` ("Open QA desk" from PM). False if no
+        such section exists yet."""
+        names = self.section_names()
+        if name not in names:
+            return False
+        self.rail.setCurrentRow(names.index(name))
+        return True
+
     def start(self) -> None:
         self.status.start()
         for section in self.sections:

@@ -86,11 +86,11 @@ def test_trader_root_default_and_override(monkeypatch, tmp_path):
     assert trader_root() == tmp_path
 
 
-def test_build_sections_is_trader_alone(
+def test_build_sections_is_trader_then_pm(
         qapp, isolated_trader_imports, monkeypatch):
     monkeypatch.setenv("COMMAND_CENTER_DESK", "http://127.0.0.1:9")
     sections = build_sections()
-    assert [s.name for s in sections] == ["Trader"]
+    assert [s.name for s in sections] == ["Trader", "PM"]
     assert all(isinstance(s, Section) for s in sections)
 
 
