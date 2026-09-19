@@ -72,6 +72,21 @@ class AskReply:
     cleared: bool = False
 
 
+def _unfinished_note(result) -> str:
+    """Ade OS says ok:false when an ask did not finish -- it stopped on a
+    promise, ran out of rounds, or ran out of time. Read nowhere before
+    2026-09-18, so "Let me explore ADE OS's actual architecture ..." was
+    shown as the whole answer to a 23-minute question. A cancelled ask
+    was stopped on purpose, and an older Ade OS sends no `ok` at all."""
+    if result.get("ok") is not False or result.get("cancelled"):
+        return ""
+    if result.get("timed_out"):
+        return ("(Ade ran out of time before finishing this. For a big job, send it as a "
+                "task on the research agent, e.g. /compare … or /summarise ….)")
+    return ("(Ade didn't finish this: it stopped before answering. For a big job, send "
+            "it as a task on the research agent, e.g. /compare … or /summarise ….)")
+
+
 def ask_reply(result) -> AskReply:
     """The one place a /v1/ask reply becomes text. An escalate NEVER
     dispatches: the answer stays on Chat and says nothing was staged."""
@@ -80,6 +95,9 @@ def ask_reply(result) -> AskReply:
     cited = result.get("roots_cited") or []
     if cited:
         text = (text + "\n\n" if text else "") + "From: " + ", ".join(map(str, cited))
+    unfinished = _unfinished_note(result)
+    if unfinished:
+        text = (text + "\n\n" if text else "") + unfinished
     esc = result.get("escalate")
     if not esc:
         return AskReply(text or "(no output)")

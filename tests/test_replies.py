@@ -95,3 +95,25 @@ def test_failed_means_a_truthy_error_not_the_key():
     assert failed({"error": "ConnectError: refused"}) is True
     assert failed({"error": {"code": "x", "message": "y"}, "status": 400}) is True
     assert failed(None) is True and failed("text") is True
+
+
+# -- an ask that did not finish says so (Ray, 2026-09-18: "it stops after getting to this") --
+
+def test_an_unfinished_ask_says_it_did_not_finish_and_what_to_do():
+    """Ade OS marks it ok:false; the desktop showed the promise as if it were
+    the answer ("Let me explore ADE OS's actual architecture ...")."""
+    r = ask_reply({"answer": "Let me explore the architecture first.", "ok": False})
+    assert r.text.startswith("Let me explore the architecture first.")
+    assert "didn't finish" in r.text and "/compare" in r.text
+
+
+def test_a_timed_out_ask_says_it_ran_out_of_time():
+    r = ask_reply({"answer": "Partial answer.", "ok": False, "timed_out": True})
+    assert "ran out of time" in r.text
+
+
+def test_a_finished_or_cancelled_ask_adds_nothing():
+    assert ask_reply({"answer": "Done.", "ok": True}).text == "Done."
+    assert ask_reply({"answer": "Done."}).text == "Done."                 # an older Ade OS
+    assert "didn't finish" not in ask_reply(
+        {"answer": "x", "ok": False, "cancelled": True}).text
