@@ -1,18 +1,21 @@
-"""What a heard utterance becomes. Speech may ASK or STAGE -- never more.
+"""What a heard utterance becomes. Speech may ASK, QUEUE or STAGE -- never more.
 
-    not woken      whisper: typed into the input, unsent. Any other engine:
-                   ignored (the Windows fallback's closed grammar maps room
-                   tone onto stock phrases -- the avatar's finding).
+    not woken      ignored, whatever the engine (Ray, 2026-09-18). The
+                   avatar typed overheard whisper into the input; with the
+                   room, a TV and whisper's invented "Thank you." all heard,
+                   that filled the box with lines Ray never said -- and the
+                   box then refused his real "Ade, hello." as his draft.
     "Ade"          the wake event, and the window opens on the input. The
                    avatar's WAKE needs text after the word, so a trimmed
                    "Hey Ade." never matched it and was typed in as dictation;
                    WAKE_ONLY catches the bare word -- from an open-vocabulary
                    engine only, for the same room-tone reason as below.
     "Ade, <line>"  the wake event, then: a line Chat would route as a plain
-                   ask is sent as one (panel.voice_ask), unless the panel is
-                   busy. Anything else -- a shell line, a task, a command, a
-                   skill, an upload, a clear, a bare yes/allow/deny -- is
-                   STAGED in the input for Enter.
+                   ask is sent as one (panel.voice_ask) -- or, while the chat
+                   is busy, QUEUED and asked the moment it is free
+                   (panel.queue_voice_ask). Anything else -- a shell line, a
+                   task, a command, a skill, an upload, a clear, a bare
+                   yes/allow/deny -- is STAGED in the input for Enter.
 
 Approvals are click-only (VoiceInterface.can_approve() is False in Ade OS
 too): nothing here can reach decide, task, shell, run or upload. The panel
@@ -61,8 +64,8 @@ FALLBACK_NOTE = ("Speech is on the Windows fallback: the whisper sidecar (127.0.
 
 
 class VoiceController(QObject):
-    """panel needs: busy, voice_ask(text) -> bool, stage(text, note, quiet)
-    -> bool, focus_input(), note(text). SIGNALS, not callbacks, for the
+    """panel needs: busy, voice_ask(text) -> bool, queue_voice_ask(text) ->
+    bool, stage(text, note) -> bool, focus_input(), note(text). SIGNALS, not callbacks, for the
     orb: a callback into the OrbController would make it and this a
     reference cycle, and a connection does not pin its receiver."""
 
@@ -167,11 +170,11 @@ class VoiceController(QObject):
         if cmd is None and WAKE_ONLY.match(text) and engine != "windows":
             cmd = ""
         if cmd is None:
-            # Overheard dictation lands in the box only if Chat would send it
-            # as a plain ask, and it never takes focus: an overheard "git push
-            # --force" must not be one stray Enter from running (review).
-            if engine == "whisper" and route(text, "chat", COMMAND_NAMES).kind == "ask":
-                return "typed" if self.panel.stage(text, quiet=True) else "ignored"
+            # Only "Ade, ..." acts (Ray, 2026-09-18). Overheard dictation used
+            # to be typed into an empty box -- and with the room, a TV and
+            # whisper's invented "Thank you." all heard, the box filled with
+            # lines Ray never said, which then refused his real "Ade, hello."
+            # as "your draft". Measured live that day.
             return "ignored"
         self.wake_heard.emit()
         self.open_requested.emit()
@@ -185,6 +188,10 @@ class VoiceController(QObject):
             self.panel.stage(cmd, DECISION_NOTE.format(cmd=cmd))
             return "staged"
         if self.panel.busy:
+            # A question waits its turn and goes the moment Ade is free (Ray,
+            # 2026-09-18); anything else is still only boxed, never run.
+            if self.panel.queue_voice_ask(cmd):
+                return "queued"
             self.panel.stage(cmd, BUSY_NOTE.format(cmd=cmd))
             return "staged"
         if self.panel.voice_ask(cmd):

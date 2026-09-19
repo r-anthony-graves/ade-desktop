@@ -50,6 +50,7 @@ BUSY_NOTE = ("Ade is still working on the previous turn - press Enter again "
 RETRY = "\n\nThe message is staged in the input - press Enter to retry."
 QUIT_NOTE = ("This turn was still running when the app quit. Ade OS may have "
              "finished it.")
+QUEUE_LIMIT = 3         # spoken questions waiting for a busy chat; the newest are kept
 CANCELLED_NOTE = ("Cancelled. Ade stops at its next step (a round already under way "
                   "finishes first); its reply will not be shown here.")
 CANCELLED_WAIT_NOTE = ("Cancelled: stopped waiting. Ade OS cannot interrupt this kind of "
@@ -111,6 +112,7 @@ class ConversationPanel(QWidget):
         self.client, self.watcher, self.store = client, watcher, store
         self.busy = False
         self._turn: dict | None = None
+        self._voice_queue: list[str] = []   # spoken questions waiting for this turn to end
         self._pending: dict[str, tuple] = {}
         self._window = {tab: RENDER_WINDOW for tab in TABS}
         self._widgets: dict[str, QWidget] = {}
@@ -521,6 +523,7 @@ class ConversationPanel(QWidget):
         else:
             self._push(turn["tab"], "system", "text", CANCELLED_WAIT_NOTE)
         self._save_soon()
+        self._drain_voice_queue()
 
     def _on_line(self, rid: str, text: str) -> None:
         turn = self._turn
@@ -549,6 +552,7 @@ class ConversationPanel(QWidget):
         if self._turn is not None and rid == self._turn["rid"]:
             self._finish_turn(self._end_turn(), result)
             self._save_soon()
+            self._drain_voice_queue()       # after the answer, so the thread reads in order
             return
         pending = self._pending.pop(rid, None)
         if pending is None:
@@ -757,21 +761,12 @@ class ConversationPanel(QWidget):
     def focus_input(self) -> None:
         self.input.setFocus()
 
-    def stage(self, text: str, note: str | None = None, *, quiet: bool = False) -> bool:
+    def stage(self, text: str, note: str | None = None) -> bool:
         """Put `text` in the input for Enter, unsent. A draft already in the
         box is never overwritten: the note says what was heard instead.
-
-        `quiet` is plain dictation, which an always-open microphone hears
-        all day: no note, no tab switch, and NO FOCUS -- placed only when
-        Chat is already showing and the box is empty (review, 2026-09-18:
-        focus moved into the box from wherever Ray was typing, so his next
-        Enter ran what the room said)."""
+        (Overheard dictation no longer comes here at all: only a woken line
+        is ever staged -- Ray, 2026-09-18.)"""
         draft = self.input.text().strip()
-        if quiet:
-            if self.current_tab() != "chat" or (draft and draft != text.strip()):
-                return False
-            self.input.setText(text)
-            return True
         if draft and draft != text.strip():
             self.set_tab("chat")
             self._push("chat", "system", "staged",
@@ -783,6 +778,22 @@ class ConversationPanel(QWidget):
         self.input.setText(text)
         self.input.setFocus()
         return True
+
+    def queue_voice_ask(self, text: str) -> bool:
+        """A spoken question that arrived while this chat was busy: it is
+        asked the moment the turn ends (answered or cancelled). Only a
+        plain ask queues; False for anything else, which the caller boxes."""
+        if route(text, "chat", COMMAND_NAMES).kind != "ask":
+            return False
+        self._voice_queue.append(text)
+        del self._voice_queue[:-QUEUE_LIMIT]
+        self._push("chat", "system", "staged",
+                   f"Queued: {text} — asked as soon as Ade finishes.")
+        return True
+
+    def _drain_voice_queue(self) -> None:
+        if not self.busy and self._voice_queue:
+            self.voice_ask(self._voice_queue.pop(0))
 
     def voice_ask(self, text: str) -> bool:
         """Speech's ONLY way to send anything: a read-only ask, on Chat,

@@ -85,9 +85,13 @@ def h(qapp, tmp_path):
     return Harness(tmp_path)
 
 
-def test_not_woken_whisper_is_typed_not_sent(h):
-    assert h.ctl.on_text("what time is it", "whisper") == "typed"
-    assert h.panel.input.text() == "what time is it"
+def test_not_woken_speech_is_ignored_and_never_reaches_the_box(h):
+    """Ray, 2026-09-18 ("Ade doesn't hear me"): overheard speech -- the room,
+    a TV, whisper's invented "Thank you." -- filled the box, and the box
+    then refused a real woken command as "your draft". Only "Ade, ..." acts."""
+    for heard in ("what time is it", "Thank you.", "So,", "Yeah."):
+        assert h.ctl.on_text(heard, "whisper") == "ignored"
+    assert h.panel.input.text() == ""
     assert h.client.calls == [] and h.woken == 0 and h.opened == 0
 
 
@@ -105,8 +109,8 @@ def test_overheard_dictation_never_takes_focus_or_changes_tab(h):
     h.panel.set_tab("chat")
     focused = []
     h.panel.input.setFocus = lambda *a: focused.append(1)   # offscreen has no focus to read
-    assert h.ctl.on_text("so what did you think", "whisper") == "typed"
-    assert h.panel.input.text() == "so what did you think" and focused == []
+    assert h.ctl.on_text("so what did you think", "whisper") == "ignored"
+    assert h.panel.input.text() == "" and focused == []
     assert h.ctl.on_text("Ade, what did you think", "whisper") == "asked"
     h.panel.input.clear()
     assert h.ctl.on_text("Ade, !git status", "whisper") == "staged"
@@ -188,12 +192,41 @@ def test_a_spoken_decision_never_reaches_decide(h, word):
     assert "click-only" in h.notes()[-1]
 
 
-def test_a_busy_panel_stages_rather_than_sends(h):
+def test_a_woken_question_while_busy_is_queued_and_asked_when_free(h):
     h.panel.send("first question")
-    assert h.ctl.on_text("Ade, second question", "whisper") == "staged"
-    assert h.verbs() == ["ask"]
-    assert h.panel.input.text() == "second question"
-    assert "still working" in h.notes()[-1]         # the controller's own branch
+    assert h.ctl.on_text("Ade, second question", "whisper") == "queued"
+    assert h.verbs() == ["ask"] and h.panel.input.text() == ""       # not sent, not boxed
+    assert "Queued: second question" in h.notes()[-1]
+    h.client.done.emit("r1", {"answer": "First answer.", "ok": True})
+    assert h.client.calls[-1][:2] == ("ask", "second question")      # asked the moment it's free
+    texts = [m["text"] for m in h.panel.view_messages("chat")]
+    assert texts.index("First answer.") < texts.index("second question")   # in order
+
+
+def test_a_queued_question_goes_as_soon_as_a_cancel_frees_the_chat(h):
+    h.panel.send("first question")
+    h.ctl.on_text("Ade, second question", "whisper")
+    h.panel.stop_button.click()
+    assert h.client.calls[-1][:2] == ("ask", "second question")
+
+
+def test_the_queue_keeps_the_latest_three(h):
+    h.panel.send("first question")
+    for n in range(5):
+        h.ctl.on_text(f"Ade, question {n}", "whisper")
+    asked = []
+    for rid in ("r1",):
+        h.client.done.emit(rid, {"answer": "done", "ok": True})
+    while h.panel.busy:
+        asked.append(h.client.calls[-1][1])
+        h.client.done.emit(f"r{len(h.client.calls)}", {"answer": "done", "ok": True})
+    assert asked == ["question 2", "question 3", "question 4"]
+
+
+def test_a_woken_non_question_while_busy_is_still_boxed_not_run(h):
+    h.panel.send("first question")
+    assert h.ctl.on_text("Ade, !git status", "whisper") == "staged"
+    assert h.verbs() == ["ask"] and h.panel.input.text() == "!git status"
 
 
 def test_a_staged_line_never_overwrites_a_draft(h):
