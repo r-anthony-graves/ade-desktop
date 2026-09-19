@@ -12,6 +12,12 @@ polls the pointer ~30 times a second and flips its own WS_EX_TRANSPARENT
 style: solid under the pointer = clickable, faint = the window below gets
 the click. That is what Electron's setIgnoreMouseEvents does for the
 avatar. A setMask() region would CLIP the painting and cut the glow off.
+
+The mic button (Ray, 2026-09-18: "put a mute button on the orb too") is
+painted by this window over the glyph -- the glyph renderer stays a port --
+low and centred, and counts as solid for clicks whatever the glyph draws
+under it. A click on it asks to mute or unmute; a drag from it still moves
+the orb. It shows what the microphone IS doing, as the controller reports.
 """
 
 from __future__ import annotations
@@ -19,8 +25,8 @@ from __future__ import annotations
 import ctypes
 import logging
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QGuiApplication, QImage, QPainter
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 log = logging.getLogger("ade_desktop.orb.window")
@@ -32,6 +38,13 @@ POINTER_MS = 33
 SIZES = {"S": 280, "M": 380, "L": 480}
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x20
+BADGE_R = 0.055         # the mic button's radius, as a share of the orb's size
+BADGE_Y = 0.885         # its centre, down the orb
+BADGE_PAD = 2           # px of forgiveness around it
+LISTENING = {"fill": QColor(30, 33, 38, 235), "ring": QColor(99, 110, 124),
+             "icon": QColor(214, 217, 222)}
+MUTED = {"fill": QColor(70, 26, 30, 245), "ring": QColor(217, 87, 87),
+         "icon": QColor(255, 138, 138)}
 
 
 def set_input_transparent(hwnd: int, through: bool) -> bool:
@@ -51,6 +64,7 @@ def set_input_transparent(hwnd: int, through: bool) -> bool:
 
 class OrbWindow(QWidget):
     open_requested = Signal()
+    mute_requested = Signal()            # the mic button was clicked
     menu_requested = Signal(QPoint)      # global position
     moved = Signal(int, int)             # where a drag left it
 
@@ -67,6 +81,8 @@ class OrbWindow(QWidget):
         self._press: QPoint | None = None
         self._origin: QPoint | None = None
         self._dragging = False
+        self._on_badge = False          # the press began on the mic button
+        self.listening = False          # what the mic button shows (the controller sets it)
         self.through = False            # clicks currently pass to the window below
         self._pointer = QTimer(self)
         self._pointer.setInterval(POINTER_MS)
@@ -80,6 +96,20 @@ class OrbWindow(QWidget):
         self.frame = img
         self.update()
 
+    def set_mic_badge(self, listening: bool) -> None:
+        self.listening = bool(listening)
+        self.update()
+
+    def badge(self) -> tuple[QPointF, float]:
+        """The mic button's centre and radius, in widget coordinates."""
+        size = self.width()
+        return QPointF(size / 2, size * BADGE_Y), size * BADGE_R
+
+    def on_badge(self, pos: QPoint) -> bool:
+        centre, radius = self.badge()
+        dx, dy = pos.x() - centre.x(), pos.y() - centre.y()
+        return dx * dx + dy * dy <= (radius + BADGE_PAD) ** 2
+
     def paintEvent(self, event) -> None:  # noqa: N802 -- Qt's name
         p = QPainter(self)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
@@ -87,13 +117,45 @@ class OrbWindow(QWidget):
             p.fillRect(self.rect(), Qt.GlobalColor.transparent)
         else:
             p.drawImage(self.rect(), self.frame)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        self._paint_badge(p)
         p.end()
+
+    def _paint_badge(self, p: QPainter) -> None:
+        """A microphone in a disc: light while listening; red, struck
+        through, when muted."""
+        c, r = self.badge()
+        look = LISTENING if self.listening else MUTED
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(look["ring"], max(1.5, r * 0.09)))
+        p.setBrush(look["fill"])
+        p.drawEllipse(c, r, r)
+        icon = look["icon"]
+        stroke = QPen(icon, max(1.5, r * 0.11))
+        stroke.setCapStyle(Qt.PenCapStyle.RoundCap)
+        w, h = r * 0.40, r * 0.72
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(icon)
+        p.drawRoundedRect(QRectF(c.x() - w / 2, c.y() - r * 0.58, w, h), w / 2, w / 2)
+        p.setPen(stroke)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        # the holder: the lower half of a ring round the capsule, then a stand
+        p.drawArc(QRectF(c.x() - r * 0.40, c.y() - r * 0.38, r * 0.80, r * 0.76),
+                  180 * 16, 180 * 16)
+        p.drawLine(QPointF(c.x(), c.y() + r * 0.38), QPointF(c.x(), c.y() + r * 0.56))
+        p.drawLine(QPointF(c.x() - r * 0.22, c.y() + r * 0.56),
+                   QPointF(c.x() + r * 0.22, c.y() + r * 0.56))
+        if not self.listening:
+            p.drawLine(QPointF(c.x() - r * 0.52, c.y() - r * 0.52),
+                       QPointF(c.x() + r * 0.52, c.y() + r * 0.52))
 
     # -- hit testing --------------------------------------------------------
 
     def hit(self, pos: QPoint) -> bool:
         """Is there enough of the orb under `pos` (widget coordinates) to
-        have aimed at?"""
+        have aimed at? The mic button always is."""
+        if self.on_badge(pos):
+            return True
         img = self.frame
         if img is None or img.isNull():
             return False
@@ -127,7 +189,16 @@ class OrbWindow(QWidget):
         return not (self.rect().contains(local) and self.hit(local))
 
     def poll_pointer(self) -> None:
-        self.set_through(self.should_pass_through(self.mapFromGlobal(QCursor.pos())))
+        local = self.mapFromGlobal(QCursor.pos())
+        self.set_through(self.should_pass_through(local))
+        self.sync_cursor(local)
+
+    def sync_cursor(self, local: QPoint) -> None:
+        """A hand over the mic button, so it reads as a button."""
+        shape = (Qt.CursorShape.PointingHandCursor if self.on_badge(local)
+                 else Qt.CursorShape.ArrowCursor)
+        if self.cursor().shape() != shape:
+            self.setCursor(shape)
 
     def set_through(self, through: bool) -> None:
         if through == self.through:
@@ -150,6 +221,7 @@ class OrbWindow(QWidget):
             self._press = event.globalPosition().toPoint()
             self._origin = self.pos()
             self._dragging = False
+            self._on_badge = self.on_badge(pos)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._press is None:
@@ -167,5 +239,7 @@ class OrbWindow(QWidget):
         self._dragging = False
         if dragged:
             self.moved.emit(self.x(), self.y())
+        elif self._on_badge:
+            self.mute_requested.emit()
         else:
             self.open_requested.emit()

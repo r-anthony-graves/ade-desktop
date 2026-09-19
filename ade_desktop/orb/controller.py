@@ -120,6 +120,8 @@ class OrbController(QObject):
         self.voice.open_requested.connect(self.open_ade)
         self.voice.hush_requested.connect(self.speaker.hush)
         orb.open_requested.connect(self.open_ade)
+        orb.mute_requested.connect(self.toggle_mic)
+        self.mic_state.connect(orb.set_mic_badge)
         orb.menu_requested.connect(self._popup)
         orb.moved.connect(self._on_moved)
 

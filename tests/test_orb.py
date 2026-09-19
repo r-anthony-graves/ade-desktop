@@ -545,3 +545,107 @@ def test_without_an_orb_there_is_no_mute_button(qapp, tmp_path):
     win = DesktopWindow([Section("Trader", QLabel("t"))], FakeStatus(),
                         state_path=tmp_path / "w.json", tray_available=False)
     assert not win.mic_button.isVisibleTo(win)
+
+
+# -- the mute button ON the orb (Ray, 2026-09-18: "put a mute button on the orb too") --
+
+def _badge_point(orb):
+    centre, _radius = orb.badge()
+    return QPoint(round(centre.x()), round(centre.y()))
+
+
+def _badge_colour(orb):
+    """The average colour inside the mic button, as painted."""
+    from PySide6.QtGui import QColor  # noqa: F401
+    img = orb.grab().toImage()
+    centre, radius = orb.badge()
+    rs = gs = bs = n = 0
+    for dx in range(-int(radius) + 3, int(radius) - 2, 2):
+        for dy in range(-int(radius) + 3, int(radius) - 2, 2):
+            if dx * dx + dy * dy <= (radius - 3) ** 2:
+                c = img.pixelColor(round(centre.x()) + dx, round(centre.y()) + dy)
+                rs, gs, bs, n = rs + c.red(), gs + c.green(), bs + c.blue(), n + 1
+    return rs / n, gs / n, bs / n
+
+
+def test_the_orb_draws_a_mic_button_that_shows_the_state(qapp):
+    orb = _framed_orb()
+    orb.set_mic_badge(True)
+    r1, g1, b1 = _badge_colour(orb)
+    orb.set_mic_badge(False)
+    r2, g2, b2 = _badge_colour(orb)
+    assert r2 > g2 + 25 and r2 > b2 + 25                  # muted reads red
+    assert not (r1 > g1 + 25 and r1 > b1 + 25)            # listening does not
+    assert orb.listening is False
+
+
+@pytest.mark.parametrize("key", ["S", "M", "L"])
+def test_the_mic_button_sits_low_on_the_orb_at_every_size(qapp, key):
+    orb = OrbWindow(SIZES[key])
+    centre, radius = orb.badge()
+    size = SIZES[key]
+    assert centre.x() == size / 2 and size * 0.8 < centre.y() < size - radius
+    assert radius >= 12                                   # big enough to aim at
+
+
+def test_the_mic_button_takes_clicks_where_the_glyph_is_clear(qapp):
+    from PySide6.QtGui import QImage
+    orb = OrbWindow()
+    clear = QImage(SIZES["M"], SIZES["M"], QImage.Format.Format_ARGB32_Premultiplied)
+    clear.fill(0)
+    orb.show_frame(clear)
+    b = _badge_point(orb)
+    assert orb.hit(b) is True and orb.should_pass_through(b) is False
+    c = SIZES["M"] // 2
+    assert orb.hit(QPoint(c, c)) is False                 # the rest still passes
+
+
+def test_a_click_on_the_mic_button_mutes_and_does_not_open(qapp):
+    orb = _framed_orb()
+    orb.move(100, 100)
+    opened, muted = [], []
+    orb.open_requested.connect(lambda: opened.append(1))
+    orb.mute_requested.connect(lambda: muted.append(1))
+    b = _badge_point(orb)
+    g = b + QPoint(100, 100)
+    orb.mousePressEvent(_mouse(QMouseEvent.Type.MouseButtonPress, b, global_pos=g))
+    orb.mouseReleaseEvent(_mouse(QMouseEvent.Type.MouseButtonRelease, b, global_pos=g))
+    assert muted == [1] and opened == []
+    c = QPoint(190, 190)
+    orb.mousePressEvent(_mouse(QMouseEvent.Type.MouseButtonPress, c, global_pos=QPoint(290, 290)))
+    orb.mouseReleaseEvent(_mouse(QMouseEvent.Type.MouseButtonRelease, c, global_pos=QPoint(290, 290)))
+    assert muted == [1] and opened == [1]
+
+
+def test_a_drag_from_the_mic_button_moves_the_orb_and_mutes_nothing(qapp):
+    orb = _framed_orb()
+    orb.move(100, 100)
+    muted, moved = [], []
+    orb.mute_requested.connect(lambda: muted.append(1))
+    orb.moved.connect(lambda x, y: moved.append((x, y)))
+    b = _badge_point(orb)
+    g = b + QPoint(100, 100)
+    orb.mousePressEvent(_mouse(QMouseEvent.Type.MouseButtonPress, b, global_pos=g))
+    orb.mouseMoveEvent(_mouse(QMouseEvent.Type.MouseMove, b, global_pos=g + QPoint(40, -30)))
+    orb.mouseReleaseEvent(_mouse(QMouseEvent.Type.MouseButtonRelease, b, global_pos=g + QPoint(40, -30)))
+    assert muted == [] and moved == [(140, 70)]
+
+
+def test_the_pointer_over_the_mic_button_is_a_hand(qapp):
+    orb = _framed_orb()
+    orb.sync_cursor(_badge_point(orb))
+    assert orb.cursor().shape() == Qt.CursorShape.PointingHandCursor
+    orb.sync_cursor(QPoint(190, 190))
+    assert orb.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+def test_the_orb_button_and_the_header_button_are_one_mute(rig):
+    rig.win.attach_mic(rig.ctl)
+    rig.ctl.start()
+    assert rig.orb.listening is True
+    rig.orb.mute_requested.emit()                         # a click on the orb's button
+    assert not rig.mic.running() and rig.device.stream.active is False
+    assert rig.orb.listening is False and rig.win.mic_button.text() == "Unmute"
+    assert not rig.ctl.mic_act.isChecked()
+    rig.win.mic_button.click()                            # unmuted from the header
+    assert rig.mic.running() and rig.orb.listening is True
