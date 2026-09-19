@@ -475,3 +475,68 @@ def test_an_upload_has_no_cancel(qapp, tmp_path):
     f.write_text("x")
     panel.upload_paths([str(f)])
     assert panel.busy and not panel.stop_button.isVisibleTo(panel)
+
+
+# -- the spinner, in the chat itself (Ray, 2026-09-18: "return the spinners to chat area") --
+
+def _spinners(panel, tab="chat"):
+    return [m for m in panel.store.tab_messages(tab) if m.get("kind") == "working"]
+
+
+def test_a_turn_shows_a_spinner_in_the_chat_until_the_reply_lands(qapp, tmp_path):
+    from ade_desktop.conversation.spin import WORDS
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("summarise the repo")
+    spin = _spinners(panel)
+    assert len(spin) == 1 and spin[0]["id"] in panel._widgets          # drawn in the thread
+    word = spin[0]["text"].split("…")[0]
+    assert word in WORDS
+    client.done.emit("r1", {"answer": "Here it is.", "ok": True})
+    assert _spinners(panel) == [] and "Here it is." in texts(panel)
+    assert spin[0]["id"] not in panel._widgets
+
+
+def test_the_spinner_counts_the_seconds_and_changes_word_as_the_avatar_did(
+        qapp, tmp_path, monkeypatch):
+    from ade_desktop.conversation import panel as panel_module
+    from ade_desktop.conversation.spin import ROTATE_S
+    clock = [1000.0]
+    monkeypatch.setattr(panel_module.time, "monotonic", lambda: clock[0])
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("long question")
+    first = _spinners(panel)[0]["text"]
+    clock[0] += 12
+    panel._on_tick()
+    text = _spinners(panel)[0]["text"]
+    assert text.startswith(first.split("…")[0]) and text.endswith("… 12 s")
+    assert panel._widgets[_spinners(panel)[0]["id"]].text() == text     # redrawn
+    clock[0] += ROTATE_S
+    panel._on_tick()
+    assert _spinners(panel)[0]["text"].split("…")[0] != first.split("…")[0]
+
+
+def test_cancel_takes_the_spinner_away(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("long question")
+    panel.stop_button.click()
+    assert _spinners(panel) == []
+
+
+def test_the_spinner_is_never_saved_or_sent_as_history(qapp, tmp_path):
+    import json
+    panel, client, _, store = _panel(tmp_path)
+    panel.send("first question")
+    store.save()
+    saved = json.loads((tmp_path / "threads.json").read_text(encoding="utf-8"))
+    assert not any(m.get("kind") == "working" for m in saved["chat"])
+    client.done.emit("r1", {"answer": "answer one", "ok": True})
+    panel.send("second question")
+    history = client.calls[-1][3]
+    assert [h["content"] for h in history] == ["first question", "answer one"]
+
+
+def test_the_working_line_below_the_thread_is_gone(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("a question")
+    assert not hasattr(panel, "working_label")
+    assert panel.stop_button.isVisibleTo(panel)            # Cancel stays below

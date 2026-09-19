@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QToolButton, QVBoxLayout,
     QWidget,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 ARGS_CLIP = 2000
 SENDING = "Sending the decision…"
 _STYLE = {
+    "spin": "color:#d9772a; padding:4px 2px;",
     "user": "background:#2a3442;color:#e8ebef;border-radius:8px;padding:6px 10px;",
     "ade": "background:#1e2126;color:#d6d9de;border-radius:8px;padding:6px 10px;",
     "error": ("background:#3a1f22;color:#f0b4b4;border:1px solid #d95757;"
@@ -47,6 +48,13 @@ def message_widget(msg: dict) -> QWidget:
     text = msg.get("text") or ""
     if kind == "approval":
         return ApprovalCard(msg)
+    if kind == "working":
+        # The avatar's spinner line (chat.html .sys.spin): amber, spaced.
+        label = _label(text, Qt.TextFormat.PlainText, _STYLE["spin"])
+        font = label.font()
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 108)
+        label.setFont(font)
+        return label
     if role == "system":
         return _label(text, Qt.TextFormat.PlainText, _STYLE["system"])
     if kind == "error":

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import time
 
+import random
 import uuid
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -33,6 +34,7 @@ from ade_desktop.conversation.replies import (
     ask_reply, error_cause, failed, health_text, read_reply, task_report, task_types_from,
 )
 from ade_desktop.conversation.router import route
+from ade_desktop.conversation.spin import ROTATE_S, WORDS as SPIN_WORDS
 from ade_desktop.conversation.skills import (
     attach, detach, resolve_superpowers, skill_list_text,
 )
@@ -163,16 +165,16 @@ class ConversationPanel(QWidget):
         self.scroll.setWidget(self.content)
         box.addWidget(self.scroll, 1)
 
+        # The spinner lives IN the thread (a "working" message: never saved,
+        # never history, kept by clear -- threads.py); below it, only the
+        # turn's Cancel / Stop.
         working = QHBoxLayout()
-        self.working_label = QLabel("")
-        self.working_label.setStyleSheet("color:#d9a441;")
+        working.addStretch(1)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setAutoDefault(False)
         self.stop_button.clicked.connect(self._on_stop)
-        working.addWidget(self.working_label, 1)
         working.addWidget(self.stop_button)
         box.addLayout(working)
-        self.working_label.hide()
         self.stop_button.hide()
 
         self.chips = SkillChips()
@@ -435,8 +437,10 @@ class ConversationPanel(QWidget):
         self.busy_changed.emit(True)
         self._turn = {"rid": rid, "kind": kind, "tab": tab, "raw": raw,
                       "t0": time.monotonic(), "stopped": False, "turn_id": turn_id}
-        self.working_label.setText("Working… 0 s")
-        self.working_label.show()
+        # The avatar's spinner: a word from its list, a new one every 90 s.
+        self._spin_index = random.randrange(len(SPIN_WORDS))
+        self._turn["spin"] = self._push(tab, "system", "working",
+                                        SPIN_WORDS[self._spin_index] + "…")
         self._tick.start()
         if kind in CANCELLABLE:
             self.stop_button.setText("Cancel")
@@ -450,18 +454,35 @@ class ConversationPanel(QWidget):
         return bool(turn_id) and self._turn is not None and self._turn.get("turn_id") == turn_id
 
     def _on_tick(self) -> None:
-        if self._turn is not None:
-            seconds = int(time.monotonic() - self._turn["t0"])
-            self.working_label.setText(f"Working… {seconds} s")
+        turn = self._turn
+        if turn is None or turn.get("spin") is None:
+            return
+        seconds = int(time.monotonic() - turn["t0"])
+        index = (self._spin_index + seconds // ROTATE_S) % len(SPIN_WORDS)
+        turn["spin"]["text"] = f"{SPIN_WORDS[index]}… {seconds} s"
+        self._refresh(turn["spin"])
 
     def _end_turn(self) -> dict:
         turn, self._turn = self._turn, None
         self.busy = False
         self.busy_changed.emit(False)
         self._tick.stop()
-        self.working_label.hide()
+        self._drop(turn.get("spin"), turn["tab"])
         self.stop_button.hide()
         return turn
+
+    def _drop(self, msg, tab) -> None:
+        """Take a message out of its thread and off the screen (the
+        spinner, when its turn ends)."""
+        if msg is None:
+            return
+        messages = self.store.tab_messages(tab)
+        if msg in messages:
+            messages.remove(msg)
+        widget = self._widgets.pop(msg["id"], None)
+        if widget is not None:
+            self.list.removeWidget(widget)
+            widget.deleteLater()
 
     def _fail(self, turn, cause: str) -> None:
         self.turn_failed.emit()
