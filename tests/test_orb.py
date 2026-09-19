@@ -50,9 +50,10 @@ class FakeClient(QObject):
         self.calls.append(call)
         return f"r{len(self.calls)}"
 
-    def ask(self, q, skills, history): return self._rid("ask", q)
+    def ask(self, q, skills, history, turn_id=None): return self._rid("ask", q)
     def chat(self, text): return self._rid("chat", text)
-    def task(self, text, t, skills): return self._rid("task", text, t)
+    def task(self, text, t, skills, turn_id=None): return self._rid("task", text, t)
+    def cancel(self, turn_id): return self._rid("cancel", turn_id)
     def decide(self, aid, allow): return self._rid("decide", aid, allow)
     def stop(self): pass
 
@@ -649,3 +650,23 @@ def test_the_orb_button_and_the_header_button_are_one_mute(rig):
     assert not rig.ctl.mic_act.isChecked()
     rig.win.mic_button.click()                            # unmuted from the header
     assert rig.mic.running() and rig.orb.listening is True
+
+
+def test_the_orb_is_busy_while_any_section_s_chat_works(qapp, tmp_path):
+    """Voice talks to General, but the mood is every chat's (2026-09-18)."""
+    r = Rig(tmp_path)
+    side_client, side_watcher = FakeClient(), FakeWatcher()
+    side = ConversationPanel(side_client, side_watcher, ThreadStore(tmp_path / "t-pm.json"))
+    win = DesktopWindow([Section("PM", QLabel("pm"))], r.status, state_path=r.state,
+                        tray_available=False, quit_fn=lambda: None, panel=r.panel,
+                        side_panels={"PM": side})
+    ctl = OrbController(window=win, orb=OrbWindow(), renderer=GlyphRenderer(epoch=0.0),
+                        mood=Mood(), speaker=r.speaker, mic=MicListener(open_stream=r.device.open),
+                        voice=r.voice, state_path=r.state, avatar_running=True)
+    win.orb_controller = ctl
+    try:
+        assert ctl.busy() is False
+        side.send("list the risks")
+        assert ctl.busy() is True and not r.panel.busy
+    finally:
+        ctl.stop()

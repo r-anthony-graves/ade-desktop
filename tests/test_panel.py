@@ -18,6 +18,7 @@ class FakeClient(QObject):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.turn_ids = []      # the turn_id each ask / task carried
         self._n = 0
 
     def _rid(self, *call):
@@ -25,9 +26,16 @@ class FakeClient(QObject):
         self.calls.append(call)
         return f"r{self._n}"
 
-    def ask(self, q, skills, history): return self._rid("ask", q, list(skills), list(history))
+    def ask(self, q, skills, history, turn_id=None):
+        self.turn_ids.append(turn_id)
+        return self._rid("ask", q, list(skills), list(history))
+
     def chat(self, text): return self._rid("chat", text)
-    def task(self, text, t, skills): return self._rid("task", text, t, list(skills))
+    def task(self, text, t, skills, turn_id=None):
+        self.turn_ids.append(turn_id)
+        return self._rid("task", text, t, list(skills))
+
+    def cancel(self, turn_id): return self._rid("cancel", turn_id)
     def shell(self, cmd): return self._rid("shell", cmd)
     def run(self, cmd): return self._rid("run", cmd)
     def kill(self): return self._rid("kill")
@@ -395,3 +403,75 @@ def test_a_task_that_ran_and_failed_says_so_without_restaging(qapp, tmp_path):
     msg = panel.view_messages("chat")[-1]
     assert msg["kind"] == "error" and "did not succeed: max rounds" in msg["text"]
     assert panel.input.text() == ""
+
+
+# -- Cancel (Ray, 2026-09-18: "add a cancel chat request") ---------------------
+
+def test_an_ask_can_be_cancelled_and_ade_is_told_to_stop(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("summarise the repo")
+    tid = client.turn_ids[-1]
+    assert tid and panel.owns_turn(tid)
+    assert panel.stop_button.isVisibleTo(panel) and panel.stop_button.text() == "Cancel"
+    panel.stop_button.click()
+    assert client.calls[-1] == ("cancel", tid)
+    assert not panel.busy and not panel.stop_button.isVisibleTo(panel)
+    assert not panel.owns_turn(tid)
+    assert "Cancelled" in texts(panel)[-1] and "next step" in texts(panel)[-1]
+    client.done.emit("r1", {"answer": "the late answer", "ok": True})
+    assert "the late answer" not in texts(panel)          # the reply is dropped
+
+
+def test_a_task_can_be_cancelled_too(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("/coding fix the build")
+    tid = client.turn_ids[-1]
+    panel.stop_button.click()
+    assert client.calls[-1] == ("cancel", tid) and not panel.busy
+
+
+def test_every_ask_has_its_own_turn(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("one")
+    client.done.emit("r1", {"answer": "a", "ok": True})
+    panel.send("two")
+    assert len(set(client.turn_ids)) == 2 and None not in client.turn_ids
+
+
+def test_a_plain_chat_cancel_only_stops_waiting_and_says_so(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("?what brain are you on")
+    panel.stop_button.click()
+    assert not any(c[0] == "cancel" for c in client.calls)
+    assert not panel.busy
+    assert "may still finish" in texts(panel)[-1]
+
+
+def test_a_new_question_can_follow_a_cancel_at_once(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("first")
+    panel.stop_button.click()
+    panel.send("second")
+    assert client.calls[-1][:2] == ("ask", "second") and panel.busy
+
+
+def test_a_cancel_that_cannot_reach_ade_says_it_may_still_run(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("first")
+    panel.stop_button.click()
+    client.done.emit(f"r{len(client.calls)}", {"error": "ConnectError: refused"})
+    assert "may still be running" in texts(panel)[-1]
+
+
+def test_a_streamed_command_still_stops_with_stop(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    panel.send("ping -t 1.1.1.1")
+    assert panel.stop_button.text() == "Stop"
+
+
+def test_an_upload_has_no_cancel(qapp, tmp_path):
+    panel, client, _, _ = _panel(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("x")
+    panel.upload_paths([str(f)])
+    assert panel.busy and not panel.stop_button.isVisibleTo(panel)

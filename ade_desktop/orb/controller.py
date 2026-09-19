@@ -105,11 +105,16 @@ class OrbController(QObject):
         status = window.status
         status.health.connect(self._on_health)
         status.activity.connect(self._on_activity)
-        self.panel.busy_changed.connect(self._feed)
-        self.panel.watcher.appeared.connect(self._feed)
-        self.panel.watcher.vanished.connect(self._feed)
-        self.panel.approval_decided.connect(self._on_decided)
-        self.panel.turn_failed.connect(self._on_failed)
+        # Voice and the orb talk to General (self.panel); the MOOD is every
+        # chat's -- busy if any section's chat is working, approvals from
+        # the one Ade OS-wide watcher (a chat per section, 2026-09-18).
+        for chat in window.all_panels():
+            chat.busy_changed.connect(self._feed)
+            chat.approval_decided.connect(self._on_decided)
+            chat.turn_failed.connect(self._on_failed)
+        self._approvals = window.approvals
+        self._approvals.appeared.connect(self._feed)
+        self._approvals.vanished.connect(self._feed)
         self.panel.reply_landed.connect(self._on_reply)
         self.speaker.started.connect(self._on_speech_started)
         self.speaker.failed.connect(self.panel.note)
@@ -238,10 +243,12 @@ class OrbController(QObject):
     # -- what Ade is doing ----------------------------------------------------
 
     def pending(self) -> int:
-        return int(self.panel.watcher.pending_count())
+        return int(self._approvals.pending_count())
 
     def busy(self) -> bool:
-        return bool(self.remote_busy or self.panel.busy)
+        window = self.window
+        chats = window.all_panels() if window is not None else [self.panel]
+        return bool(self.remote_busy or any(chat.busy for chat in chats))
 
     def _on_health(self, payload) -> None:
         self.online = is_online(payload)

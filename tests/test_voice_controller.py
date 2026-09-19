@@ -29,9 +29,10 @@ class FakeClient(QObject):
         self.calls.append(call)
         return f"r{len(self.calls)}"
 
-    def ask(self, q, skills, history): return self._rid("ask", q, list(skills), list(history))
+    def ask(self, q, skills, history, turn_id=None): return self._rid("ask", q, list(skills), list(history))
     def chat(self, text): return self._rid("chat", text)
-    def task(self, text, t, skills): return self._rid("task", text, t, list(skills))
+    def task(self, text, t, skills, turn_id=None): return self._rid("task", text, t, list(skills))
+    def cancel(self, turn_id): return self._rid("cancel", turn_id)
     def shell(self, cmd): return self._rid("shell", cmd)
     def run(self, cmd): return self._rid("run", cmd)
     def kill(self): return self._rid("kill")

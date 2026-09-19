@@ -154,31 +154,36 @@ class _Stoppable:
 class FakePanel(QLabel):
     approval_needed = Signal(str)
 
-    def __init__(self, log):
-        super().__init__("panel")
-        self.log = log
-        self.client = _Stoppable(log, "client")
-        self.watcher = _Stoppable(log, "watcher")
+    def __init__(self, log, name="panel"):
+        super().__init__(name)
+        self.log, self.name = log, name
+        self.client = _Stoppable(log, f"{name}.client")
+        self.watcher = _Stoppable(log, f"{name}.watcher")
 
     def on_quit(self):
-        self.log.append("panel.on_quit")
+        self.log.append(f"{self.name}.on_quit")
 
 
 def _with_panel(tmp_path, *, tray=True):
+    """General's chat, and the Trader section's own (a chat per section)."""
     log = []
-    panel = FakePanel(log)
+    panel = FakePanel(log, "general")
+    trader_chat = FakePanel(log, "trader")
     status = FakeStatus()
-    win = DesktopWindow([Section("Trader", QLabel("t"))], status,
-                        state_path=tmp_path / "window.json",
+    win = DesktopWindow([Section("Trader", QLabel("t")), Section("Bare", QLabel("b"))],
+                        status, state_path=tmp_path / "window.json",
                         tray_available=tray, quit_fn=lambda: log.append("quit"),
-                        panel=panel)
+                        panel=panel, side_panels={"Trader": trader_chat})
+    win.trader_chat = trader_chat
     return win, panel, log
 
 
-def test_the_panel_sits_on_the_right_of_a_splitter(qapp, tmp_path):
+def test_a_section_s_own_chat_sits_on_the_right_of_a_splitter(qapp, tmp_path):
     win, panel, _ = _with_panel(tmp_path)
-    win.show_section("Trader")                   # General holds it full size
-    assert win.splitter.widget(win.splitter.count() - 1) is panel
+    win.show_section("Trader")
+    assert win.splitter.widget(win.splitter.count() - 1) is win.side
+    assert win.side.currentWidget() is win.trader_chat and not win.side.isHidden()
+    assert panel.parent() is win.general_page             # General's never moves
     assert win.panel_open() is True
     assert win.panel_toggle.text() == "Ade ◂"
 
@@ -189,13 +194,14 @@ def test_the_toggle_and_the_shortcut_open_and_close_it(qapp, tmp_path):
     win, _, _ = _with_panel(tmp_path)
     win.show_section("Trader")
     win.panel_toggle.click()
-    assert win.panel_open() is False and win.panel_toggle.text() == "Ade ▸"
+    assert win.panel_open() is False and win.side.isHidden()
+    assert win.panel_toggle.text() == "Ade ▸"
     # The shortcut belongs to THIS window only -- never application-wide,
     # never a global hotkey.
     assert win.panel_shortcut.context() == Qt.ShortcutContext.WindowShortcut
     assert win.panel_shortcut.key().toString() == "Ctrl+Shift+A"
     win.panel_shortcut.activated.emit()
-    assert win.panel_open() is True
+    assert win.panel_open() is True and not win.side.isHidden()
 
 
 def test_panel_state_round_trips_and_the_width_is_clamped(qapp, tmp_path):
@@ -209,26 +215,31 @@ def test_panel_state_round_trips_and_the_width_is_clamped(qapp, tmp_path):
     assert saved["panel_open"] is False and saved["panel_width"] == 900
 
 
-def test_an_approval_raises_the_window_and_opens_the_panel(qapp, tmp_path, monkeypatch):
+def test_an_approval_shows_the_section_holding_its_card(qapp, tmp_path, monkeypatch):
     win, panel, _ = _with_panel(tmp_path)
     shown = []
     monkeypatch.setattr(win.tray, "showMessage",
                         lambda *a, **k: shown.append(a[:2]))
+    win.show_section("Trader")
     win.set_panel_open(False)
+    win.show_section("General")
     win.hide()
-    panel.approval_needed.emit("write_file")
-    assert win.isVisible() and win.panel_open()
+    win.trader_chat.approval_needed.emit("write_file")    # the Trader chat's turn asked
+    assert win.isVisible() and win.current_section() == "Trader"
+    assert win.panel_open() and not win.side.isHidden()
     assert shown == [("Ade needs a decision", "write_file")]
-    panel.approval_needed.emit("run_shell")     # already visible: no notice
-    assert len(shown) == 1
+    panel.approval_needed.emit("run_shell")                # General's: back to General
+    assert win.current_section() == "General" and len(shown) == 1
 
 
-def test_start_and_quit_include_the_panel(qapp, tmp_path):
+def test_start_and_quit_include_every_chat(qapp, tmp_path):
     win, _, log = _with_panel(tmp_path)
     win.start()
-    assert "watcher.start" in log
+    assert "general.watcher.start" in log and "trader.watcher.start" in log
     win.quit_app()
-    assert log[-4:] == ["panel.on_quit", "client.stop", "watcher.stop", "quit"]
+    assert log[-7:] == ["general.on_quit", "general.client.stop", "general.watcher.stop",
+                        "trader.on_quit", "trader.client.stop", "trader.watcher.stop",
+                        "quit"]
 
 
 def test_show_and_raise_shows_a_hidden_window(qapp, tmp_path):
@@ -261,30 +272,34 @@ def test_quit_asks_before_losing_unsaved_work(qapp, tmp_path):
 
 # -- General (Ray, 2026-09-18: "add a general") -------------------------------------
 
-def test_general_leads_the_rail_and_holds_the_conversation_full_size(qapp, tmp_path):
+def test_general_leads_the_rail_and_holds_its_own_chat_full_size(qapp, tmp_path):
     win, panel, _ = _with_panel(tmp_path)
     assert win.section_names()[0] == "General"
     assert win.current_section() == "General"            # the first thing Ray sees
     assert panel.parent() is win.general_page and not panel.isHidden()
-    assert win.panel_toggle.isHidden()
+    assert win.panel_toggle.isHidden() and win.side.isHidden()
 
 
-def test_leaving_general_puts_the_panel_back_as_it_was(qapp, tmp_path):
+def test_each_section_shows_its_own_chat_and_general_keeps_its(qapp, tmp_path):
     win, panel, _ = _with_panel(tmp_path)
     win.show_section("Trader")
-    assert win.splitter.indexOf(panel) >= 0 and not panel.isHidden()
+    assert win.side.currentWidget() is win.trader_chat
+    assert panel.parent() is win.general_page            # never moved into the side
+    win.show_section("Bare")                             # a section with no chat
+    assert win.side.isHidden() and win.panel_toggle.isHidden()
+    win.show_section("Trader")
+    assert not win.side.isHidden() and not win.panel_toggle.isHidden()
+
+
+def test_leaving_general_keeps_the_side_chat_as_it_was(qapp, tmp_path):
+    win, panel, _ = _with_panel(tmp_path)
+    win.show_section("Trader")
     win.set_panel_open(False)
     win.show_section("General")
-    assert panel.parent() is win.general_page and not panel.isHidden()
+    assert win.side.isHidden()
     win.show_section("Trader")
-    assert win.splitter.indexOf(panel) >= 0 and panel.isHidden()   # still closed
+    assert win.side.isHidden()                           # still closed
     assert win.panel_toggle.text() == "Ade ▸" and not win.panel_toggle.isHidden()
-
-
-def test_an_approval_in_general_needs_nothing_moved(qapp, tmp_path):
-    win, panel, _ = _with_panel(tmp_path)
-    win.raise_for_approval("run_shell")
-    assert panel.parent() is win.general_page and not panel.isHidden()
 
 
 def test_the_side_panel_s_state_is_what_is_saved_from_general(qapp, tmp_path):
@@ -299,4 +314,18 @@ def test_the_side_panel_s_state_is_what_is_saved_from_general(qapp, tmp_path):
     win2, panel2, _ = _with_panel(tmp_path)
     assert win2.current_section() == "General" and not panel2.isHidden()
     win2.show_section("Trader")
-    assert panel2.isHidden()                               # the side preference survived
+    assert win2.side.isHidden()                            # the side preference survived
+
+
+def test_switching_sections_switches_to_that_section_s_chat(qapp, tmp_path):
+    log = []
+    trader_chat, pm_chat = FakePanel(log, "trader"), FakePanel(log, "pm")
+    win = DesktopWindow([Section("Trader", QLabel("t")), Section("PM", QLabel("p"))],
+                        FakeStatus(), state_path=tmp_path / "window.json",
+                        tray_available=False, quit_fn=lambda: None,
+                        panel=FakePanel(log, "general"),
+                        side_panels={"Trader": trader_chat, "PM": pm_chat})
+    win.show_section("PM")
+    assert win.side.currentWidget() is pm_chat
+    win.show_section("Trader")
+    assert win.side.currentWidget() is trader_chat

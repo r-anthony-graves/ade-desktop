@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ade_desktop.ade_status import brain_name, health_pill
+from ade_desktop.conversation.sessions import GENERAL
 from ade_desktop.geometry import (
     Rect, centred_on, clamp_to_screens, load_state, rect_from_state,
     save_state,
@@ -35,11 +36,10 @@ DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
 PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
 # Ray, 2026-09-18: "need a general chat not just trader pm and qa, add a
-# general". The rail's first section is Ade's conversation, full size -- the
-# SAME conversation as the side panel (one thread, one approvals flow), not
-# a second one: the panel moves into the General page while it is showing
-# and back beside the other sections when it is not.
-GENERAL = "General"
+# general", then "create chat sessions for each so chats dont overlap". The
+# rail's first section is General's chat, full size; every other section has
+# a chat of its own beside it (conversation/sessions.py), so a question asked
+# in PM never lands in QA and one long ask never blocks another section.
 
 
 def clamp_panel_width(value) -> int:
@@ -89,11 +89,18 @@ class DesktopWindow(QMainWindow):
     def __init__(self, sections: list[Section], status, *, state_path: Path,
                  tray_available: bool | None = None,
                  quit_fn: Callable[[], None] | None = None,
-                 panel=None, confirm_quit=None, parent=None) -> None:
+                 panel=None, side_panels=None, approvals=None, confirm_quit=None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.sections = list(sections)
         self.status = status
+        # A chat per section (Ray, 2026-09-18): `panel` is General's, full
+        # size on its own page; `side_panels` holds each section's own chat,
+        # shown beside that section. `approvals` is the one Ade OS-wide
+        # watcher (the orb counts from it); each chat sees only its own.
         self.panel = panel
+        self.side_panels = dict(side_panels or {})
+        self.approvals = approvals if approvals is not None else getattr(panel, "watcher", None)
         self._panel_width = PANEL_DEFAULT_W
         self._state_path = Path(state_path)
         self._quit_fn = quit_fn or QApplication.quit
@@ -139,7 +146,7 @@ class DesktopWindow(QMainWindow):
         self.panel_toggle.setObjectName("panelToggle")
         self.panel_toggle.setToolTip("Show or hide the Ade panel (Ctrl+Shift+A)")
         self.panel_toggle.clicked.connect(self._toggle_panel)
-        self.panel_toggle.setVisible(panel is not None)
+        self.panel_toggle.setVisible(False)     # shown in a section that has a chat
         row.addWidget(self.panel_toggle)
         outer.addWidget(header)
 
@@ -154,13 +161,13 @@ class DesktopWindow(QMainWindow):
         for section in self.sections:
             self.rail.addItem(section.name)
             self.stack.addWidget(section.widget)
-        self._in_general = False
-        self._side_open = True          # the side panel's own open state
+        self._side_open = True          # the side chat's open state, shared by sections
         if panel is not None:
             self.general_page = QWidget()
             self.general_page.setObjectName("generalPage")
             self._general_box = QVBoxLayout(self.general_page)
             self._general_box.setContentsMargins(0, 0, 0, 0)
+            self._general_box.addWidget(panel)      # General's own chat, for good
             self.rail.insertItem(0, GENERAL)
             self.stack.insertWidget(0, self.general_page)
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -171,11 +178,19 @@ class DesktopWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(main)
-        if panel is not None:
-            self.splitter.addWidget(panel)
+        # Each section's chat, one at a time, beside its section.
+        self.side = QStackedWidget()
+        self.side.setObjectName("sideChats")
+        for chat in self.side_panels.values():
+            self.side.addWidget(chat)
+        self.side.hide()
+        if self.side_panels:
+            self.splitter.addWidget(self.side)
             self.splitter.setStretchFactor(0, 1)
             self.splitter.setStretchFactor(1, 0)
-            panel.approval_needed.connect(self.raise_for_approval)
+        for chat in self.all_panels():
+            chat.approval_needed.connect(self._on_approval_needed)
+        if self.side_panels:
             # Inside THIS window only: an app must not take an OS key (the
             # avatar's lesson with Alt+Space).
             self.panel_shortcut = QShortcut(
@@ -236,80 +251,81 @@ class DesktopWindow(QMainWindow):
         for section in self.sections:
             if section.start is not None:
                 section.start()
-        if self.panel is not None:
-            self.panel.watcher.start()
+        for chat in self.all_panels():
+            chat.watcher.start()
 
     # -- the conversation panel ---------------------------------------------
 
     # -- General: the conversation, full size ---------------------------------
 
+    def all_panels(self) -> list:
+        """Every chat: General's first, then each section's."""
+        return ([self.panel] if self.panel is not None else []) + list(self.side_panels.values())
+
+    def side_chat(self):
+        """The chat shown beside the current section, or None (General,
+        or a section without one)."""
+        return self.side_panels.get(self.current_section())
+
     def _on_rail_row(self, row: int) -> None:
-        if self.panel is None:
+        chat = self.side_chat()
+        if chat is None:
+            if not self.side.isHidden():
+                self._remember_panel_width()
+                self.side.hide()
+            self.panel_toggle.hide()
             return
-        if self.current_section() == GENERAL:
-            self._panel_to_general()
-        else:
-            self._panel_to_side()
-
-    def _panel_to_general(self) -> None:
-        if self._in_general:
-            return
-        self._side_open = self.panel_open()
-        self._remember_panel_width()
-        self._in_general = True
-        self._general_box.addWidget(self.panel)      # reparents it out of the splitter
-        self.panel.show()
-        self.panel_toggle.hide()
-
-    def _panel_to_side(self) -> None:
-        if not self._in_general:
-            return
-        self._in_general = False
-        self.splitter.addWidget(self.panel)
-        self.panel.hide()
+        self.side.setCurrentWidget(chat)
         self.panel_toggle.show()
-        self.set_panel_open(self._side_open)
+        self._apply_side()
 
     def panel_open(self) -> bool:
-        """The SIDE panel's state -- remembered, not measured, while the
-        panel is showing full size in General."""
-        if self._in_general:
-            return self._side_open
-        return self.panel is not None and not self.panel.isHidden()
+        """Whether the side chat is open -- one preference for every
+        section, remembered while General or a chat-less section shows."""
+        return self._side_open
 
     def set_panel_open(self, open_: bool) -> None:
-        if self.panel is None:
-            return
-        if self._in_general:
-            self._side_open = bool(open_)       # it is already in view, full size
-            self.panel_toggle.setText("Ade ◂" if self._side_open else "Ade ▸")
-            return
-        if open_ and self.panel.isHidden():
-            self.panel.show()
+        self._side_open = bool(open_)
+        self._apply_side()
+
+    def _apply_side(self) -> None:
+        self.panel_toggle.setText("Ade ◂" if self._side_open else "Ade ▸")
+        if self.side_chat() is None:
+            return                      # nothing beside this section to show
+        if self._side_open and self.side.isHidden():
+            self.side.show()
             total = sum(self.splitter.sizes()) or self.width()
             width = clamp_panel_width(self._panel_width)
             self.splitter.setSizes([max(1, total - width), width])
-        elif not open_ and not self.panel.isHidden():
+        elif not self._side_open and not self.side.isHidden():
             self._remember_panel_width()
-            self.panel.hide()
-        self.panel_toggle.setText("Ade ◂" if self.panel_open() else "Ade ▸")
+            self.side.hide()
 
     def _toggle_panel(self) -> None:
         self.set_panel_open(not self.panel_open())
 
     def _remember_panel_width(self) -> None:
-        if self.panel_open():
+        if not self.side.isHidden():
             sizes = self.splitter.sizes()
             if len(sizes) == 2 and sizes[1] > 0:
                 self._panel_width = clamp_panel_width(sizes[1])
 
-    def raise_for_approval(self, tool: str) -> None:
+    def _on_approval_needed(self, tool: str) -> None:
+        chat = self.sender()
+        section = next((name for name, c in self.side_panels.items() if c is chat), GENERAL)
+        self.raise_for_approval(tool, section)
+
+    def raise_for_approval(self, tool: str, section: str | None = None) -> None:
         """A decision is waiting: an approval nobody sees times out as a
-        denial. Show and raise the window, open the panel (it has already
-        selected Chat), and if the window was hidden, say so from the tray."""
+        denial. Show the section whose chat holds the card, raise the
+        window, open the side chat when it is one, and if the window was
+        hidden, say so from the tray."""
         was_hidden = not self.isVisible()
+        if section is not None:
+            self.show_section(section)
         self.show_and_raise()
-        self.set_panel_open(True)
+        if self.side_chat() is not None:
+            self.set_panel_open(True)
         if was_hidden and self.tray is not None:
             self.tray.showMessage("Ade needs a decision", tool,
                                   QSystemTrayIcon.MessageIcon.Warning, 10000)
@@ -393,13 +409,12 @@ class DesktopWindow(QMainWindow):
                 self.orb_controller.stop()
             except Exception:  # noqa: BLE001 -- quitting must finish
                 log.exception("stopping the orb failed")
-        if self.panel is not None:
-            for step in (self.panel.on_quit, self.panel.client.stop,
-                         self.panel.watcher.stop):
+        for chat in self.all_panels():
+            for step in (chat.on_quit, chat.client.stop, chat.watcher.stop):
                 try:
                     step()
                 except Exception:  # noqa: BLE001 -- quitting must finish
-                    log.exception("stopping the panel failed")
+                    log.exception("stopping a chat failed")
         self.status.stop()
         if self.tray is not None:
             self.tray.hide()
@@ -449,12 +464,9 @@ class DesktopWindow(QMainWindow):
         rect = clamp_to_screens(rect, screens)
         self.setGeometry(rect.x, rect.y, rect.w, rect.h)
         self._start_maximized = bool(state.get("maximized"))
-        if self.panel is not None:
-            self._panel_width = clamp_panel_width(
-                state.get("panel_width", PANEL_DEFAULT_W))
-            self.panel.hide()   # set_panel_open sizes it on the way back in
-            self.set_panel_open(state.get("panel_open", True) is not False)
-        # After the panel: selecting General moves the panel into it.
+        self._panel_width = clamp_panel_width(state.get("panel_width", PANEL_DEFAULT_W))
+        self._side_open = state.get("panel_open", True) is not False
+        # Selecting the section shows (or hides) its side chat.
         names = self.section_names()
         wanted = state.get("section")
         if names:

@@ -23,12 +23,14 @@ import itertools
 import threading
 import time
 import weakref
+from urllib.parse import quote
 
 from PySide6.QtCore import QObject, Signal
 
 from ade_desktop.ade_status import ade_base
 from ade_desktop.net import get_json, post_file, post_json, stream_lines
 
+# General's; each section's session passes its own (conversation/sessions.py).
 TOPIC = "u/local/desktop"
 SESSION = "ade-desktop"
 # The avatar's per-route timeouts (adeos/avatar/main.js ADE_CALL_TIMEOUT_MS):
@@ -42,9 +44,11 @@ class ConversationClient(QObject):
     line = Signal(str, str)       # request id, one NDJSON line
 
     def __init__(self, base=None, *, post=post_json, get=get_json,
-                 upload=post_file, stream=stream_lines, parent=None) -> None:
+                 upload=post_file, stream=stream_lines, topic=TOPIC, session=SESSION,
+                 parent=None) -> None:
         super().__init__(parent)
         self.base = (base or ade_base()).rstrip("/")
+        self.topic, self.session = topic, session
         self._post, self._get = post, get
         self._upload, self._stream = upload, stream
         self._ids = itertools.count(1)
@@ -95,20 +99,30 @@ class ConversationClient(QObject):
 
     # -- the routes ---------------------------------------------------------
 
-    def ask(self, question, skills, history) -> str:
-        return self._submit(self._post_to("/v1/ask", {
-            "question": question, "skills": list(skills),
-            "history": list(history)}, "ask"))
+    def ask(self, question, skills, history, turn_id=None) -> str:
+        """`turn_id` makes the ask interruptible: cancel(turn_id)."""
+        body = {"question": question, "skills": list(skills), "history": list(history)}
+        if turn_id:
+            body["turn_id"] = turn_id
+        return self._submit(self._post_to("/v1/ask", body, "ask"))
 
     def chat(self, text) -> str:
         return self._submit(self._post_to("/v1/chat/completions", {
             "messages": [{"role": "user", "content": text}],
             "stream": False}, "chat"))
 
-    def task(self, text, task_type, skills) -> str:
-        return self._submit(self._post_to("/v1/tasks", {
-            "description": text, "task_type": task_type, "topic": TOPIC,
-            "skills": list(skills)}, "task"))
+    def task(self, text, task_type, skills, turn_id=None) -> str:
+        body = {"description": text, "task_type": task_type, "topic": self.topic,
+                "skills": list(skills)}
+        if turn_id:
+            body["turn_id"] = turn_id
+        return self._submit(self._post_to("/v1/tasks", body, "task"))
+
+    def cancel(self, turn_id) -> str:
+        """Ask Ade OS to stop that ask or task at its next round. It denies
+        only that turn's own approvals (Ade OS, 2026-09-18)."""
+        return self._submit(self._post_to(
+            "/v1/tasks/%s/cancel" % quote(str(turn_id), safe=""), {}))
 
     def shell(self, cmd) -> str:
         return self._submit(self._post_to("/v1/terminal", {"cmd": cmd},
@@ -118,7 +132,7 @@ class ConversationClient(QObject):
         """The streamed shell: one `line` signal per NDJSON frame, then
         `done`. No timeout -- Stop is the way out."""
         self._stop_stream.clear()
-        url, body = self.base + "/v1/terminal/run", {"session": SESSION,
+        url, body = self.base + "/v1/terminal/run", {"session": self.session,
                                                      "cmd": cmd}
         stop, stream, wself = self._stop_stream.is_set, self._stream, weakref.ref(self)
 
@@ -138,7 +152,7 @@ class ConversationClient(QObject):
         command itself ends (the next run respawns the session)."""
         self._stop_stream.set()
         return self._submit(self._post_to("/v1/terminal/kill",
-                                          {"session": SESSION}))
+                                          {"session": self.session}))
 
     def _get_from(self, path, timeout):
         get, url = self._get, self.base + path

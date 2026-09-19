@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import time
 
+import uuid
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
@@ -45,9 +47,22 @@ BUSY_NOTE = ("Ade is still working on the previous turn - press Enter again "
              "once it settles.")
 RETRY = "\n\nThe message is staged in the input - press Enter to retry."
 QUIT_NOTE = ("This turn was still running when the app quit. Ade OS may have "
-             "finished it (topic u/local/desktop).")
+             "finished it.")
+CANCELLED_NOTE = ("Cancelled. Ade stops at its next step (a round already under way "
+                  "finishes first); its reply will not be shown here.")
+CANCELLED_WAIT_NOTE = ("Cancelled: stopped waiting. Ade OS cannot interrupt this kind of "
+                       "request, so it may still finish in the background.")
+# Kinds Cancel ends. "inline" keeps its Stop (it kills the shell session);
+# an upload has no Cancel -- its files go one after another, locally, fast.
+CANCELLABLE = ("ask", "task", "chat", "shell")
 ASK_LABEL = "Ask"
 SHELL_LABEL = "Shell - NOT gated by Permission.check()"
+
+
+def _turn_id() -> str:
+    """A client turn id: Ade OS registers it, so the turn can be cancelled
+    and its approvals are known to be this chat's."""
+    return "desk-" + uuid.uuid4().hex
 
 
 class HistoryLineEdit(QLineEdit):
@@ -320,8 +335,9 @@ class ConversationPanel(QWidget):
         # trailing user line, which must be THIS question -- built first, it
         # dropped an earlier unanswered question instead (review finding).
         history = thread_history(self.store.chat)
-        rid = self.client.ask(r.text, self.store.skills, history)
-        self._start_turn(rid, "ask", "chat", raw)
+        tid = _turn_id()
+        rid = self.client.ask(r.text, self.store.skills, history, turn_id=tid)
+        self._start_turn(rid, "ask", "chat", raw, turn_id=tid)
 
     def _route_chat(self, r, raw, tab) -> None:
         if not r.text:
@@ -339,8 +355,9 @@ class ConversationPanel(QWidget):
             return
         self.set_tab("chat")
         self._push("chat", "user", "task", f"/{r.type} {r.text}")
-        rid = self.client.task(r.text, r.type, self.store.skills)
-        self._start_turn(rid, "task", "chat", raw)
+        tid = _turn_id()
+        rid = self.client.task(r.text, r.type, self.store.skills, turn_id=tid)
+        self._start_turn(rid, "task", "chat", raw, turn_id=tid)
 
     def _route_shell(self, r, raw, tab) -> None:
         if not r.text:
@@ -375,8 +392,9 @@ class ConversationPanel(QWidget):
             self.set_tab("chat")
             self._push("chat", "user", "ask", raw)
             # A fresh question: no thread history travels with it.
-            rid = self.client.ask(r.text, self.store.skills, [])
-            self._start_turn(rid, "ask", "chat", raw)
+            tid = _turn_id()
+            rid = self.client.ask(r.text, self.store.skills, [], turn_id=tid)
+            self._start_turn(rid, "ask", "chat", raw, turn_id=tid)
         else:
             note = run_local(verb, self.store, tab)
             if verb in ("reset", "restore", "clear", "compact"):
@@ -412,14 +430,24 @@ class ConversationPanel(QWidget):
 
     # -- turns --------------------------------------------------------------
 
-    def _start_turn(self, rid, kind, tab, raw) -> None:
+    def _start_turn(self, rid, kind, tab, raw, turn_id=None) -> None:
         self.busy = True
         self.busy_changed.emit(True)
         self._turn = {"rid": rid, "kind": kind, "tab": tab, "raw": raw,
-                      "t0": time.monotonic(), "stopped": False}
+                      "t0": time.monotonic(), "stopped": False, "turn_id": turn_id}
         self.working_label.setText("Working… 0 s")
         self.working_label.show()
         self._tick.start()
+        if kind in CANCELLABLE:
+            self.stop_button.setText("Cancel")
+            self.stop_button.show()
+        elif kind == "inline":
+            self.stop_button.setText("Stop")
+
+    def owns_turn(self, turn_id) -> bool:
+        """Is `turn_id` the turn this chat is running? (Approvals raised by
+        it are shown here, not in another section's chat.)"""
+        return bool(turn_id) and self._turn is not None and self._turn.get("turn_id") == turn_id
 
     def _on_tick(self) -> None:
         if self._turn is not None:
@@ -451,9 +479,27 @@ class ConversationPanel(QWidget):
             self.input.setFocus()
 
     def _on_stop(self) -> None:
-        if self._turn is not None and self._turn["kind"] == "inline":
+        if self._turn is None:
+            return
+        if self._turn["kind"] == "inline":
             self._turn["stopped"] = True
             self._pending[self.client.kill()] = ("kill",)
+        elif self._turn["kind"] in CANCELLABLE:
+            self.cancel_turn()
+
+    def cancel_turn(self) -> None:
+        """Stop waiting now, and ask Ade OS to stop the turn when it can:
+        an ask or a task carries a turn_id Ade OS registered; a plain chat
+        or a one-shot shell has nothing Ade OS can interrupt. Either way the
+        chat is free at once and the late reply is dropped (its rid is no
+        longer the turn's)."""
+        turn = self._end_turn()
+        if turn.get("turn_id"):
+            self._pending[self.client.cancel(turn["turn_id"])] = ("cancel", turn["tab"])
+            self._push(turn["tab"], "system", "text", CANCELLED_NOTE)
+        else:
+            self._push(turn["tab"], "system", "text", CANCELLED_WAIT_NOTE)
+        self._save_soon()
 
     def _on_line(self, rid: str, text: str) -> None:
         turn = self._turn
@@ -573,6 +619,12 @@ class ConversationPanel(QWidget):
         self._push(tab, "system", "staged",
                    head + tail + "\n\nOr /skill <name> to attach a procedure, "
                    "/superpowers for the process set.")
+
+    def _done_cancel(self, pending, result) -> None:
+        if failed(result):
+            self._push(pending[1], "system", "text",
+                       f"Could not reach Ade OS to stop it ({error_cause(result)}), so it "
+                       "may still be running; its reply will not be shown here.")
 
     def _done_kill(self, pending, result) -> None:
         if failed(result):

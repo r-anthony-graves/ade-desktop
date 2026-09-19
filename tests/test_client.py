@@ -199,3 +199,44 @@ def test_a_client_dropped_mid_call_is_freed_on_the_main_thread(qapp, pump):
     assert freed_on == ["MainThread"]
     release.set()
     pump(lambda: False, timeout=0.3)    # the worker ends quietly, no emit
+
+
+# -- a chat per section, and Cancel (Ray, 2026-09-18) --------------------------
+
+def test_a_session_client_carries_its_own_topic_and_terminal_session(qapp, pump):
+    rec = Recorder()
+    seen = []
+
+    def fake_stream(url, body, on_line, should_stop):
+        seen.append(body)
+        return {"ok": True}
+
+    c = ConversationClient("http://ade", post=rec.post, get=rec.get, stream=fake_stream,
+                           topic="u/local/desktop-pm", session="ade-desktop-chat-pm")
+    done, _ = _collect(c)
+    ids = [c.task("fix", "coding", []), c.run("dir"), c.kill()]
+    assert pump(lambda: all(i in done for i in ids))
+    by_url = {call[1]: call for call in rec.calls}
+    assert by_url["http://ade/v1/tasks"][2]["topic"] == "u/local/desktop-pm"
+    assert seen == [{"session": "ade-desktop-chat-pm", "cmd": "dir"}]
+    assert by_url["http://ade/v1/terminal/kill"][2] == {"session": "ade-desktop-chat-pm"}
+
+
+def test_a_turn_id_travels_with_an_ask_and_a_task(qapp, pump):
+    rec = Recorder()
+    c = _client(rec)
+    done, _ = _collect(c)
+    ids = [c.ask("q", [], [], turn_id="t-ask"), c.task("fix", "coding", [], turn_id="t-task")]
+    assert pump(lambda: all(i in done for i in ids))
+    by_url = {call[1]: call for call in rec.calls}
+    assert by_url["http://ade/v1/ask"][2]["turn_id"] == "t-ask"
+    assert by_url["http://ade/v1/tasks"][2]["turn_id"] == "t-task"
+
+
+def test_cancel_asks_ade_os_to_stop_that_turn(qapp, pump):
+    rec = Recorder()
+    c = _client(rec)
+    done, _ = _collect(c)
+    rid = c.cancel("t-1/../x")
+    assert pump(lambda: rid in done)
+    assert rec.calls[0][:3] == ("post", "http://ade/v1/tasks/t-1%2F..%2Fx/cancel", {})

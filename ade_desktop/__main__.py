@@ -88,18 +88,36 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     from ade_desktop.conversation.approvals import ApprovalWatcher
     from ade_desktop.conversation.client import ConversationClient
     from ade_desktop.conversation.panel import ConversationPanel
+    from ade_desktop.conversation.sessions import GENERAL, ApprovalRouter, session_for
     from ade_desktop.conversation.threads import ThreadStore
     from ade_desktop.sections import build_sections
     from ade_desktop.workspace.active import ActiveProject
 
-    # threads.json sits beside window.json -- the smoke run passes a temp
-    # state_path, so it never touches the real conversation either.
-    store = ThreadStore(Path(state_path).with_name("threads.json"))
-    panel = ConversationPanel(ConversationClient(), ApprovalWatcher(), store)
+    # A chat per section (Ray, 2026-09-18): each with its own thread file
+    # (beside window.json -- the smoke run passes a temp state_path, so it
+    # never touches the real conversations), Ade OS topic and terminal
+    # session. ONE approval watcher, routed to the chat whose turn asked.
+    approvals = ApprovalWatcher()
+    router = ApprovalRouter(approvals)
+
+    def chat(name):
+        spec = session_for(name)
+        store = ThreadStore(Path(state_path).with_name(spec.threads_file))
+        client = ConversationClient(topic=spec.topic, session=spec.terminal)
+        conversation = ConversationPanel(client, router.watcher_for(name), store)
+        router.bind(name, conversation)
+        return conversation
+
+    panel = chat(GENERAL)
     active = ActiveProject(state_path)
     sections = build_sections(active)
+    side = {section.name: chat(section.name) for section in sections}
     win = DesktopWindow(sections, AdeStatusClient(),
-                        state_path=state_path, quit_fn=quit_fn, panel=panel)
+                        state_path=state_path, quit_fn=quit_fn, panel=panel,
+                        side_panels=side, approvals=approvals)
+    router.setParent(win)
+    approvals.setParent(win)
+    win.approval_router = router
     for section in sections:
         request = getattr(section.widget, "section_requested", None)
         if request is not None:
@@ -131,6 +149,8 @@ def build_orb(win, state_path: Path, avatar_running: bool | None = None):
 
 
 def smoke_report(win) -> dict:
+    from ade_desktop.conversation.sessions import GENERAL
+
     trader = next((s for s in win.sections if s.name == "Trader"), None)
     pills = {}
     if trader is not None and trader.placeholder_reason is None:
@@ -161,6 +181,8 @@ def smoke_report(win) -> dict:
         "panel": ({"tabs": [win.panel.tabs.tabText(i)
                             for i in range(win.panel.tabs.count())],
                    "open": win.panel_open()} if win.panel is not None else None),
+        "chats": ([GENERAL] if win.panel is not None else []) + list(win.side_panels),
+        "chat_topics": sorted({c.client.topic for c in win.all_panels()}),
     }
 
 
