@@ -51,3 +51,37 @@ def test_first_token_is_case_insensitive():
 def test_empty():
     for raw in ('', '   ', None):
         assert detect(raw) == (False, 'empty')
+
+
+# -- prose that the syntax rules mistook for a command (Ray, 2026-09-18) -----------
+
+BT = chr(96)          # PowerShell's escape character, the backtick
+RSQ = chr(0x2019)     # a right single quotation mark: a word processor's apostrophe
+
+RAY_PASTE = """-Analyze ADE OS's existing LLM and reasoning architecture and compare it with a tiered cognitive architecture:
+
+1. **Fast LLM** - conversation, classification, routing, simple tasks.
+2. **Reasoning layer** - planning, decomposition, diagnosis, tool selection."""
+
+
+def test_a_pasted_multi_line_message_is_never_a_command():
+    """The paste began with "-Analyze" (a flag, to step 2) and carried
+    **bold** (a wildcard) -- and ran as PowerShell, ungated."""
+    assert detect(RAY_PASTE) == (False, "multiline")
+    assert detect("git status\ngit log") == (False, "multiline")   # ! is the way to run two
+    assert detect("git status\n")[0] is True                        # a trailing newline is one line
+
+
+def test_an_unbalanced_quote_is_prose_because_no_command_could_parse():
+    assert detect("-Analyze ADE OS's existing LLM and reasoning architecture") == (
+        False, "unbalanced")
+    assert detect("-Explain Ade" + RSQ + "s reasoning layer") == (False, "unbalanced")
+    assert detect('-Summarise the "architecture doc') == (False, "unbalanced")
+
+
+def test_balanced_and_escaped_quotes_still_run():
+    for line in ('git commit -m "Ray' + "'" + 's fix"',
+                 "Write-Output 'it''s fine'",
+                 'Write-Output "a ' + BT + '" b"',            # odd count, balanced only by the escape
+                 "git commit -m 'release'"):
+        assert detect(line)[0] is True, (line, detect(line))

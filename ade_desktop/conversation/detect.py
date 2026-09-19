@@ -49,13 +49,47 @@ RE_EXT = re.compile(r"\.(?:ps1|bat|cmd|exe|jar|py|js)$", re.I)
 _SYNTAX = (RE_FLAG, RE_ANGLE, RE_PIPE, RE_SEMI, RE_STAR, RE_ASSIGN,
            RE_CALLOP, RE_OPEN)
 
+# PowerShell's quotes include the typographic ones a word processor types.
+_SINGLE = frozenset("'" + chr(0x2018) + chr(0x2019) + chr(0x201A) + chr(0x201B))
+_DOUBLE = frozenset('"' + chr(0x201C) + chr(0x201D) + chr(0x201E))
+_ESCAPE = chr(96)       # the backtick: escapes the next character outside '...'
+
+
+def _unbalanced_quotes(line: str) -> bool:
+    """Would PowerShell reject this line as an unterminated string? A ''
+    inside single quotes is an escaped quote (it toggles twice); a
+    backtick escapes the next character everywhere but in single quotes."""
+    single = double = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == _ESCAPE and not single:
+            i += 2
+            continue
+        if c in _SINGLE and not double:
+            single = not single
+        elif c in _DOUBLE and not single:
+            double = not double
+        i += 1
+    return single or double
+
 
 def detect(raw) -> tuple[bool, str]:
-    """(is_command, reason); reason is one of empty, conversation, syntax,
-    cmdlet, name, path, prose."""
+    """(is_command, reason); reason is one of empty, multiline, unbalanced,
+    conversation, syntax, cmdlet, name, path, prose."""
     v = str("" if raw is None else raw).strip()
     if not v:
         return (False, "empty")
+    # Step 0 (desktop, 2026-09-18; the avatar has neither): what no bare
+    # command can be. Ray pasted a multi-line prompt beginning "-Analyze
+    # ADE OS's ..." with **bold** in it: step 2 saw a flag and a wildcard
+    # across the WHOLE paste, and it ran as PowerShell, ungated. A command
+    # is one line (! runs anything else), and an unterminated quote is a
+    # line PowerShell could not even parse -- so both are Ade's.
+    if "\n" in v or "\r" in v:
+        return (False, "multiline")
+    if _unbalanced_quotes(v):
+        return (False, "unbalanced")
     tok = v.split()[0].lower()
     # Step 1: compare the token with trailing punctuation stripped ("hi;"
     # must find "hi"). Everything after keeps the RAW token.
