@@ -20,7 +20,7 @@ from ade_desktop.net import request_json
 
 DEFAULT_URL = "http://127.0.0.1:8412"
 TOKEN_HEADER = "X-Path-Token"
-GATED = ("set_stage", "confirm")
+GATED = ("set_stage", "confirm", "mark_criteria")
 
 
 def path_base() -> str:
@@ -113,3 +113,16 @@ class PathClient(AsyncClient):
     def confirm(self, teaching_id: str) -> str:
         return self._post("/api/teaching/%s/confirm" % quote(teaching_id, safe=""), {},
                           gated=True)
+
+    # -- the day (Read, Refract, Reflect) --------------------------------------------
+
+    def day(self) -> str: return self._read("/api/day")
+
+    def reflect(self, step: int, body: str) -> str:
+        """`body` exactly as typed: The Path stores it verbatim."""
+        return self._post("/api/day/reflect", {"step": str(step), "body": body})
+
+    def mark_criteria(self, charter_id: str, goal: str, claims: list[str]) -> str:
+        return self._post("/api/charter/criteria",
+                          {"charter_id": charter_id, "goal": goal,
+                           "claims": list(claims)}, gated=True)
