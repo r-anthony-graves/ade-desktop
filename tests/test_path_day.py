@@ -186,3 +186,61 @@ def test_stopping_the_panel_stops_the_mirror_client_too(qapp):
     m = FakeMirror()
     PathPanel(FakeClient(), mirror_client=m).stop_clients()
     assert m.stopped
+
+
+# -- fix round 1 (task review) ------------------------------------------------------
+
+def test_a_step_the_path_never_received_says_not_sent_and_keeps_it(qapp):
+    """FALSIFY: in `_on_done` change `job[0] in ("acted", "acted_day")` back to
+    `job[0] == "acted"`; the "Not sent" assert fails."""
+    c = FakeClient()
+    p = PathPanel(c, mirror_client=FakeMirror())
+    p._got_day(STATUS)
+    p.day_box.setPlainText("my step")
+    p._on_day_step()
+    c.answer("reflect", {"error": "ConnectError: [WinError 10061] refused"})
+    assert "Not sent" in p.message.text()
+    assert p.day_box.toPlainText() == "my step"
+
+
+def _asked(c, m):
+    p = PathPanel(c, mirror_client=m)
+    p._got_day(REFLECTED)
+    p._on_mirror()
+    assert "Asked Ade" in p.message.text()
+    return p
+
+
+def test_a_finished_turn_shows_ade_s_own_words(qapp):
+    """FALSIFY: in `_got_mirror` replace the `else:` branch's body with
+    `pass`; the "Asked Ade" line stays and this fails."""
+    c, m = FakeClient(), FakeMirror()
+    p = _asked(c, m)
+    m.done.emit("m1", {"ok": True, "error": None,
+                       "summary": "The packet was refused: the day is not reflected."})
+    assert "Asked Ade" not in p.message.text()
+    assert "The packet was refused: the day is not reflected." in p.message.text()
+
+
+def test_a_failed_turn_with_no_error_shows_its_summary_not_no_reply(qapp):
+    """FALSIFY: in `_got_mirror` make the first test
+    `if not _ok(result) or result.get("ok") is False:`; this shows
+    "no reply" instead of the summary and fails."""
+    c, m = FakeClient(), FakeMirror()
+    p = _asked(c, m)
+    m.done.emit("m1", {"ok": False, "error": "", "summary": "Budget ran out mid-turn."})
+    text = p.message.text()
+    assert "Budget ran out mid-turn." in text and "no reply" not in text
+    assert "ask again" in text
+
+
+def test_a_refresh_mid_turn_cannot_start_a_second_turn(qapp):
+    """FALSIFY: in `_got_day` drop `and not asking`; the button re-enables
+    while the turn is still out and the first assert fails."""
+    c, m = FakeClient(), FakeMirror()
+    p = _asked(c, m)
+    p._got_day(REFLECTED)                                 # a Refresh mid-turn
+    assert not p.mirror_button.isEnabled()
+    m.done.emit("m1", {"ok": True, "error": None, "summary": "Written."})
+    c.answer("day", REFLECTED)                            # the re-read after the turn
+    assert p.mirror_button.isEnabled()

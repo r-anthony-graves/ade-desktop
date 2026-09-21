@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListW
                                QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter,
                                QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
-from ade_desktop.conversation.replies import error_cause, failed
+from ade_desktop.conversation.replies import error_cause, failed, task_report
 
 STALE_S = 5.0
 DOWN_NOTE = ("The Path is not running. Start it yourself with `thepath serve` in "
@@ -403,7 +403,7 @@ class PathPanel(QWidget):
             return self._got_mirror(result)
         if _unreachable(result):
             self._down()
-            if job[0] == "acted":
+            if job[0] in ("acted", "acted_day"):
                 self.message.setText("Not sent: The Path is not answering. What you "
                                      "typed is still in its box.")
                 self.message.setStyleSheet(ERR_STYLE)
@@ -443,7 +443,8 @@ class PathPanel(QWidget):
         self.day_box.setEnabled(step is not None)
         self.day_step_button.setEnabled(step is not None)
         self.day_step_button.setText(f"Save step {step}" if step else "Save step")
-        self.mirror_button.setEnabled(can_ask_mirror(result) and
+        asking = any(job[0] == "mirror" for job in self._pending.values())
+        self.mirror_button.setEnabled(can_ask_mirror(result) and not asking and
                                       self.mirror_client is not None)
         charter = result.get("charter") if result.get("state") == "criteria_unmarked" \
             else None
@@ -660,10 +661,19 @@ class PathPanel(QWidget):
         self._pending[self.mirror_client.ask(day)] = ("mirror",)
 
     def _got_mirror(self, result) -> None:
-        if not _ok(result) or (isinstance(result, dict) and result.get("ok") is False):
+        """Every reply replaces the "Asked Ade…" line, in Ade's own words
+        (task_report: ok:false, summary, degraded, low confidence). Whether
+        a mirror was written is The Path's to say -- the day is re-read."""
+        if not _ok(result):
             self.message.setText("Ade did not finish the mirror: "
                                  f"{error_cause(result)}. The day stays open; ask again.")
             self.message.setStyleSheet(ERR_STYLE)
+        else:
+            text, needs_a_look = task_report(result)
+            if result.get("ok") is False:
+                text += "\nThe day stays open; ask again."
+            self.message.setText("Ade on the mirror: " + text)
+            self.message.setStyleSheet(ERR_STYLE if needs_a_look else MUTED)
         self._pending[self.client.day()] = ("day",)
 
     def _on_mark(self) -> None:
