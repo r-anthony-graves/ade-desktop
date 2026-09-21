@@ -17,8 +17,8 @@ import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter,
-                               QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+                               QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
+                               QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ade_desktop.conversation.replies import error_cause, failed, task_report
 
@@ -124,12 +124,31 @@ def today_text(d: dict) -> str:
     return "\n".join(parts)
 
 
+def ask_ray(parent, title: str, text: str) -> bool:
+    """The default confirmation: a plain Yes/No box, No unless he says Yes."""
+    answer = QMessageBox.question(parent, title, text,
+                                  QMessageBox.StandardButton.Yes
+                                  | QMessageBox.StandardButton.No,
+                                  QMessageBox.StandardButton.No)
+    return answer == QMessageBox.StandardButton.Yes
+
+
+def mark_question(goal: str, criteria: list[str]) -> str:
+    """What Ray is asked before criteria are marked: marking is FINAL and
+    append-only in The Path, so he sees exactly what will be sent."""
+    ticked = "\n".join(f"  - {c}" for c in criteria) or "  (none ticked)"
+    return ("Marking the criteria is final: The Path keeps them for the whole "
+            "cycle and they cannot be changed afterwards.\n\n"
+            f"Cycle goal:\n  {goal}\n\nCriteria:\n{ticked}\n\nMark these?")
+
+
 class PathPanel(QWidget):
     def __init__(self, client, *, mirror_client=None, clock=time.monotonic,
-                 parent=None) -> None:
+                 confirm=ask_ray, parent=None) -> None:
         super().__init__(parent)
         self.client = client
         self.mirror_client = mirror_client
+        self._confirm = confirm
         self._clock = clock
         self._last = -1e9
         self._pending: dict[str, tuple] = {}
@@ -682,9 +701,17 @@ class PathPanel(QWidget):
             self.message.setStyleSheet(ERR_STYLE)
             return
         goal = self.goal_combo.currentData()
-        ticked = [self.criteria_list.item(i).data(Qt.ItemDataRole.UserRole)
-                  for i in range(self.criteria_list.count())
-                  if self.criteria_list.item(i).checkState() == Qt.CheckState.Checked]
+        items = [self.criteria_list.item(i) for i in range(self.criteria_list.count())
+                 if self.criteria_list.item(i).checkState() == Qt.CheckState.Checked]
+        ticked = [it.data(Qt.ItemDataRole.UserRole) for it in items]
+        # FINAL AND APPEND-ONLY: nothing is sent until Ray has seen the goal
+        # and every ticked criterion and said yes.
+        if not self._confirm(self, "Mark the criteria?",
+                             mark_question(self.goal_combo.currentText(),
+                                           [it.text() for it in items])):
+            self.message.setText("Not marked: nothing was sent.")
+            self.message.setStyleSheet(MUTED)
+            return
         self._pending[self.client.mark_criteria(self._charter_id, goal, ticked)] = \
             ("acted_day",)
 

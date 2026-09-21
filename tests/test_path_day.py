@@ -154,7 +154,7 @@ def test_mark_needs_the_token_and_sends_ticked_claims(qapp):
     at the top of `_on_mark`; the token-message assert fails, and the claims
     would have been sent without a token."""
     c = FakeClient()
-    p = PathPanel(c, mirror_client=FakeMirror())
+    p = PathPanel(c, mirror_client=FakeMirror(), confirm=Answer(True))
     p._got_day({"state": "criteria_unmarked", "message": "", "orientation": None,
                 "day": None, "charter": {"charter_id": "T-1", "claims": [
                     {"claim_id": "CL-1", "ordinal": 1, "category": "p", "body": "a"},
@@ -244,3 +244,56 @@ def test_a_refresh_mid_turn_cannot_start_a_second_turn(qapp):
     m.done.emit("m1", {"ok": True, "error": None, "summary": "Written."})
     c.answer("day", REFLECTED)                            # the re-read after the turn
     assert p.mirror_button.isEnabled()
+
+
+# -- final review F13: marking is final, so Ray confirms first ---------------------
+
+class Answer:
+    """A confirmation that answers `yes` and records what Ray was shown."""
+    def __init__(self, yes):
+        self.yes = yes
+        self.asked = []
+
+    def __call__(self, parent, title, text):
+        self.asked.append(text)
+        return self.yes
+
+
+UNMARKED = {"state": "criteria_unmarked", "message": "", "orientation": None,
+            "day": None, "charter": {"charter_id": "T-1", "claims": [
+                {"claim_id": "CL-1", "ordinal": 1, "category": "p", "body": "the goal"},
+                {"claim_id": "CL-2", "ordinal": 2, "category": "p", "body": "hold on"},
+                {"claim_id": "CL-3", "ordinal": 3, "category": "p", "body": "let go"}]}}
+
+
+def _ticked(confirm):
+    c = FakeClient()
+    c.set_token("fedcba9876543210")
+    p = PathPanel(c, mirror_client=FakeMirror(), confirm=confirm)
+    p._got_day(UNMARKED)
+    p.goal_combo.setCurrentIndex(0)
+    p.criteria_list.item(1).setCheckState(Qt.CheckState.Checked)
+    p.criteria_list.item(2).setCheckState(Qt.CheckState.Checked)
+    p._on_mark()
+    return c, p
+
+
+def test_declining_the_confirmation_sends_nothing(qapp):
+    """FALSIFY: delete the `if not self._confirm(...): ... return` block in
+    `_on_mark`; mark_criteria is sent and this fails."""
+    no = Answer(False)
+    c, p = _ticked(no)
+    assert len(no.asked) == 1
+    assert not any(x[0] == "mark_criteria" for x in c.calls)
+    assert "nothing was sent" in p.message.text()
+
+
+def test_accepting_sends_exactly_the_ticked_claims_after_showing_them(qapp):
+    """FALSIFY: pass `[]` instead of the ticked items' text to
+    `mark_question` in `_on_mark`; the shown-criteria asserts fail."""
+    yes = Answer(True)
+    c, _ = _ticked(yes)
+    shown = yes.asked[0]
+    assert "#1 the goal" in shown and "#2 hold on" in shown and "#3 let go" in shown
+    assert "final" in shown.lower()
+    assert c.calls[-1] == ("mark_criteria", "T-1", "CL-1", ["CL-2", "CL-3"])
