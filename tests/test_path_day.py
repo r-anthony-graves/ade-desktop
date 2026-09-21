@@ -65,6 +65,8 @@ def test_the_mirror_goes_to_the_companion():
 
 
 def test_mark_criteria_carries_the_token_and_reflect_does_not(qapp, pump):
+    """FALSIFY: remove `gated=True` from mark_criteria's `_post` call in
+    client.py; this fails (`gated` comes back empty)."""
     calls = []
 
     def request(method, url, body, timeout, headers=None):
