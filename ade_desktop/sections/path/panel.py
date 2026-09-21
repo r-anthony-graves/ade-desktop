@@ -1,11 +1,13 @@
-"""The Path, natively: Today, Read, Diary, Study, Stage and Catalogue over
-The Path's JSON face. Everything shown is The Path's answer, as plain text
-(nothing here renders HTML or follows a link); every write is followed by
-a re-read of the page it changed.
+"""The Path, natively: Day, Today, Read, Diary, Study, Stage and Catalogue
+over The Path's JSON face. Everything shown is The Path's answer, as plain
+text (nothing here renders HTML or follows a link); every write is followed
+by a re-read of the page it changed.
 
-The two verbs that are Ray's -- set the stage, confirm a teaching -- need
-the token he pastes into the header box; without it they are not sent at
-all, and with a wrong one The Path refuses exactly as its pages do.
+The three verbs that are Ray's -- set the stage, confirm a teaching, mark a
+charter's criteria -- need the token he pastes into the header box; without
+it they are not sent at all, and with a wrong one The Path refuses exactly
+as its pages do. The day's mirror is asked of Ade OS (a `mirror` job), not
+of The Path, so its failure never marks The Path down.
 No lambda captures the panel.
 """
 
@@ -123,9 +125,11 @@ def today_text(d: dict) -> str:
 
 
 class PathPanel(QWidget):
-    def __init__(self, client, *, clock=time.monotonic, parent=None) -> None:
+    def __init__(self, client, *, mirror_client=None, clock=time.monotonic,
+                 parent=None) -> None:
         super().__init__(parent)
         self.client = client
+        self.mirror_client = mirror_client
         self._clock = clock
         self._last = -1e9
         self._pending: dict[str, tuple] = {}
@@ -134,6 +138,8 @@ class PathPanel(QWidget):
         self.current_teaching: dict | None = None
         self._build()
         client.done.connect(self._on_done)
+        if mirror_client is not None:
+            mirror_client.done.connect(self._on_done)
 
     # -- layout -------------------------------------------------------------------
 
@@ -171,6 +177,7 @@ class PathPanel(QWidget):
         v.addWidget(self.message)
         self.tabs = QTabWidget()
         v.addWidget(self.tabs, 1)
+        self.tabs.addTab(self._build_day(), "Day")
         self.tabs.addTab(self._build_today(), "Today")
         self.tabs.addTab(self._build_read(), "Read")
         self.tabs.addTab(self._build_diary(), "Diary")
@@ -182,6 +189,42 @@ class PathPanel(QWidget):
         self.token_box.returnPressed.connect(self._on_use_token)
         self.forget.clicked.connect(self._on_forget)
         self._sync_token()
+
+    def _build_day(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        self.day_view = _browser()
+        v.addWidget(self.day_view, 4)
+        self.day_box = QPlainTextEdit()
+        self.day_box.setPlaceholderText("Your answer to the next step — immutable once saved")
+        self.day_box.setFixedHeight(90)
+        row = QHBoxLayout()
+        self.day_step_button = QPushButton("Save step")
+        self.mirror_button = QPushButton("Ask Ade for the mirror")
+        row.addWidget(self.day_step_button)
+        row.addStretch(1)
+        row.addWidget(self.mirror_button)
+        v.addWidget(self.day_box)
+        v.addLayout(row)
+        self.criteria_box = QWidget()
+        cv = QVBoxLayout(self.criteria_box)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(QLabel("Cycle goal (one claim):"))
+        self.goal_combo = QComboBox()
+        cv.addWidget(self.goal_combo)
+        cv.addWidget(QLabel("Criteria (tick the claims the cycle is graded on):"))
+        self.criteria_list = QListWidget()
+        cv.addWidget(self.criteria_list, 1)
+        self.mark_button = QPushButton("Mark criteria (final, needs your token)")
+        cv.addWidget(self.mark_button)
+        v.addWidget(self.criteria_box, 2)
+        self.criteria_box.setVisible(False)
+        self._charter_id = ""
+        self.day_status: dict = {}
+        self.day_step_button.clicked.connect(self._on_day_step)
+        self.mirror_button.clicked.connect(self._on_mirror)
+        self.mark_button.clicked.connect(self._on_mark)
+        return w
 
     def _build_today(self) -> QWidget:
         w = QWidget()
@@ -347,7 +390,7 @@ class PathPanel(QWidget):
 
     def refresh(self) -> None:
         self._last = self._clock()
-        for kind, rid in (("today", self.client.today()), ("read", self.client.read_entries()),
+        for kind, rid in (("day", self.client.day()), ("today", self.client.today()), ("read", self.client.read_entries()),
                           ("diary", self.client.diary()), ("study", self.client.study()),
                           ("stage", self.client.stage()), ("catalogue", self.client.catalogue())):
             self._pending[rid] = (kind,)
@@ -356,6 +399,8 @@ class PathPanel(QWidget):
         job = self._pending.pop(rid, None)
         if job is None:
             return
+        if job[0] == "mirror":                   # Ade OS answered, not The Path
+            return self._got_mirror(result)
         if _unreachable(result):
             self._down()
             if job[0] == "acted":
@@ -386,6 +431,35 @@ class PathPanel(QWidget):
             self.message.setStyleSheet(ERR_STYLE)
 
     # -- pages ---------------------------------------------------------------------------
+
+    def _got_day(self, result) -> None:
+        from ade_desktop.sections.path.day import can_ask_mirror, day_text, next_step
+        if not _ok(result):
+            self.day_view.setPlainText(f"Could not read the day: {error_cause(result)}")
+            return
+        self.day_status = result
+        self.day_view.setPlainText(day_text(result))
+        step = next_step(result)
+        self.day_box.setEnabled(step is not None)
+        self.day_step_button.setEnabled(step is not None)
+        self.day_step_button.setText(f"Save step {step}" if step else "Save step")
+        self.mirror_button.setEnabled(can_ask_mirror(result) and
+                                      self.mirror_client is not None)
+        charter = result.get("charter") if result.get("state") == "criteria_unmarked" \
+            else None
+        self.criteria_box.setVisible(bool(charter))
+        if charter:
+            self._charter_id = charter["charter_id"]
+            self.goal_combo.clear()
+            self.criteria_list.clear()
+            for c in charter["claims"]:
+                label = f"#{c['ordinal']} {c['body']}"
+                self.goal_combo.addItem(label, c["claim_id"])
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, c["claim_id"])
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+                self.criteria_list.addItem(item)
 
     def _got_today(self, result) -> None:
         if not _ok(result):
@@ -563,6 +637,49 @@ class PathPanel(QWidget):
         if t and self._gated("Confirming a teaching"):
             self._act(self.client.confirm(t["teaching_id"]), "study")
 
+    def _on_day_step(self) -> None:
+        from ade_desktop.sections.path.day import next_step
+        step, body = next_step(self.day_status), self.day_box.toPlainText()
+        if step is None or not body.strip():
+            return
+        self._pending[self.client.reflect(step, body)] = ("acted_day",)
+
+    def _got_acted_day(self, result) -> None:
+        self._say(result)
+        if _ok(result) and result.get("ok"):
+            self.day_box.clear()                 # only once The Path kept it
+        self._pending[self.client.day()] = ("day",)
+
+    def _on_mirror(self) -> None:
+        day = (self.day_status.get("day") or {}).get("day_id")
+        if not day or self.mirror_client is None:
+            return
+        self.mirror_button.setEnabled(False)
+        self.message.setText("Asked Ade for the mirror — a turn takes minutes.")
+        self.message.setStyleSheet(MUTED)
+        self._pending[self.mirror_client.ask(day)] = ("mirror",)
+
+    def _got_mirror(self, result) -> None:
+        if not _ok(result) or (isinstance(result, dict) and result.get("ok") is False):
+            self.message.setText("Ade did not finish the mirror: "
+                                 f"{error_cause(result)}. The day stays open; ask again.")
+            self.message.setStyleSheet(ERR_STYLE)
+        self._pending[self.client.day()] = ("day",)
+
+    def _on_mark(self) -> None:
+        if not self.client.has_token():
+            self.message.setText(NEED_TOKEN.format(what="Marking the criteria"))
+            self.message.setStyleSheet(ERR_STYLE)
+            return
+        goal = self.goal_combo.currentData()
+        ticked = [self.criteria_list.item(i).data(Qt.ItemDataRole.UserRole)
+                  for i in range(self.criteria_list.count())
+                  if self.criteria_list.item(i).checkState() == Qt.CheckState.Checked]
+        self._pending[self.client.mark_criteria(self._charter_id, goal, ticked)] = \
+            ("acted_day",)
+
     def stop_clients(self) -> None:
         self.client.forget_token()
         self.client.stop()
+        if self.mirror_client is not None:
+            self.mirror_client.stop()

@@ -96,6 +96,7 @@ class FakeClient(QObject):
     def has_token(self): return bool(self.token)
     def stop(self): pass
     def today(self): return self._rid("today")
+    def day(self): return self._rid("day")
     def read_entries(self): return self._rid("read")
     def diary(self): return self._rid("diary")
     def stage(self): return self._rid("stage")
@@ -127,6 +128,8 @@ TODAY = {"stage": "awareness", "summary": "a quiet day", "prompt": None,
 def rig(qapp):
     c = FakeClient()
     panel = PathPanel(c)
+    panel.tabs.setCurrentIndex(1)       # Today (Day is first; a hidden tab hides its buttons)
+    assert panel.tabs.tabText(1) == "Today"
     panel.refresh()
     c.answer("today", TODAY)
     c.answer("stage", {"stage": "awareness", "stages": ["awareness", "wisdom"], "is_ray": False})
@@ -328,6 +331,7 @@ def test_a_refused_write_keeps_it_too(rig):
 def test_record_and_offer_follow_the_page_s_rule(qapp):
     c = FakeClient()
     panel = PathPanel(c)
+    panel.tabs.setCurrentIndex(1)       # Today
     panel.refresh()
     # a source (the lesson's) and no prompt: record it, no Offer -- even
     # with no live offer, as views.today does
