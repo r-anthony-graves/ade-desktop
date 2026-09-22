@@ -4,11 +4,11 @@ When the trader loaded, its OWN DARK_QSS is the base: its screens rely on
 object names (tileTitle, tileValue, ...) that only that stylesheet styles,
 so a copy here would drift. BASE_QSS is the fallback for when it did not.
 
-The app's base text size lives in ONE place, BASE_FONT_PX; only a
-deliberate step away from it (the app title) states a size of its own, and
-anything that merely wanted the base inherits it. It is declared in
-DESKTOP_QSS, which is concatenated AFTER whichever base loaded, so it wins
-over the trader's own 15px without editing D:/tradinglocal. A Qt stylesheet
+The app's text sizes live in ONE place: BASE_FONT_PX and the three
+ratios derived from it. Anything that merely wanted the base inherits it
+and states nothing. They are declared in DESKTOP_QSS, which is
+concatenated AFTER whichever base sheet loaded, so they win over the
+trader's own 15px without editing D:/tradinglocal. A Qt stylesheet
 font-size also beats a font set with setFont(), so the monospace surfaces
 (terminal, editor, shell bubbles) keep the system fixed FAMILY and take
 their SIZE from here too -- measured, not assumed.
@@ -16,7 +16,15 @@ their SIZE from here too -- measured, not assumed.
 
 from __future__ import annotations
 
-BASE_FONT_PX = 17
+BASE_FONT_PX = 20
+
+# The ladder is DERIVED, never retyped: the app title a fifth above the
+# base, a quieter label a notch under it, the hint quieter still. Their
+# ratios are the ones the app shipped with at 15px, so raising the base
+# keeps the hierarchy instead of flattening it.
+TITLE_FONT_PX = round(BASE_FONT_PX * 1.2)
+SMALL_FONT_PX = round(BASE_FONT_PX * 0.93)
+HINT_FONT_PX = round(BASE_FONT_PX * 0.8)
 
 TONES = {"ok": "#3fb68b", "warn": "#d9a441", "bad": "#d95757",
          "off": "#5c626b"}
@@ -31,9 +39,11 @@ QMenu { background: #1e2126; border: 1px solid #333a45; }
 QMenu::item:selected { background: #2a3442; }
 """
 
-DESKTOP_QSS = f"QMainWindow, QWidget {{ font-size: {BASE_FONT_PX}px; }}\n" + """
+DESKTOP_QSS = f"""QMainWindow, QWidget {{ font-size: {BASE_FONT_PX}px; }}
+QLabel#appTitle {{ font-size: {TITLE_FONT_PX}px; font-weight: 800;
+                   color: #e8ebef; }}
+""" + """
 QWidget#header { background: #131417; border-bottom: 1px solid #2a2e35; }
-QLabel#appTitle { font-size: 20px; font-weight: 800; color: #e8ebef; }
 QLabel#brain { color: #9aa1ab; }
 QListWidget#rail { background: #131417; border: none;
                    border-right: 1px solid #2a2e35; }

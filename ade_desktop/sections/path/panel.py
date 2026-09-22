@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListW
                                QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ade_desktop.conversation.replies import error_cause, failed, task_report
+from ade_desktop.theme import SMALL_FONT_PX
 
 STALE_S = 5.0
 DOWN_NOTE = ("The Path is not running. Start it yourself with `thepath serve` in "
@@ -167,7 +168,7 @@ class PathPanel(QWidget):
         v.setContentsMargins(10, 8, 10, 8)
         head = QHBoxLayout()
         title = QLabel("The Path")
-        title.setStyleSheet("font-size:17px;font-weight:600;")
+        title.setStyleSheet("font-weight:600;")
         self.status = QLabel("")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -357,7 +358,7 @@ class PathPanel(QWidget):
         v = QVBoxLayout(w)
         self.stage_label = QLabel("")
         self.stage_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.stage_label.setStyleSheet("font-size:16px;")
+        self.stage_label.setStyleSheet(f"font-size:{SMALL_FONT_PX}px;")
         v.addWidget(self.stage_label)
         row = QHBoxLayout()
         self.stage_combo = QComboBox()

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ade_desktop.conversation.commands import BY_NAME, COMMAND_NAMES, help_text, run_local
 from ade_desktop.conversation.history import thread_history
+from ade_desktop.theme import HINT_FONT_PX
 from ade_desktop.conversation.replies import (
     ask_reply, error_cause, failed, health_text, read_reply, task_report, task_types_from,
 )
@@ -192,7 +193,7 @@ class ConversationPanel(QWidget):
         row.addWidget(self.input, 1)
         box.addLayout(row)
         self.hint = QLabel("/help · ! shell · ? chat · /type a task · /skill")
-        self.hint.setStyleSheet("color:#6f7682;font-size:13px;")
+        self.hint.setStyleSheet(f"color:#6f7682;font-size:{HINT_FONT_PX}px;")
         box.addWidget(self.hint)
 
         self._tick = QTimer(self)
