@@ -16,7 +16,7 @@ their SIZE from here too -- measured, not assumed.
 
 from __future__ import annotations
 
-BASE_FONT_PX = 20
+BASE_FONT_PX = 18
 
 # The ladder is DERIVED, never retyped: the app title a fifth above the
 # base, a quieter label a notch under it, the hint quieter still. Their
