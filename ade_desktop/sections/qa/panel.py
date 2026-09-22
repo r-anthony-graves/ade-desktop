@@ -175,7 +175,7 @@ class QaPanel(QWidget):
         outer.setContentsMargins(10, 8, 10, 8)
         head = QHBoxLayout()
         title = QLabel("QA")
-        title.setStyleSheet("font-size:15px;font-weight:600;")
+        title.setStyleSheet("font-size:17px;font-weight:600;")
         self.project_label = _muted()
         head.addWidget(title)
         head.addWidget(self.project_label, 1)

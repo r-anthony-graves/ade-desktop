@@ -261,7 +261,7 @@ class PmPanel(QWidget):
         box.addWidget(self.add_panel)
         head = QHBoxLayout()
         self.title = QLabel("")
-        self.title.setStyleSheet("font-size:15px;font-weight:600;")
+        self.title.setStyleSheet("font-size:17px;font-weight:600;")
         self.status_combo = QComboBox()
         for s in model.PROJECT_STATES:
             self.status_combo.addItem(model.format_status(s), s)

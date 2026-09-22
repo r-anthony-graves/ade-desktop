@@ -192,7 +192,7 @@ class ConversationPanel(QWidget):
         row.addWidget(self.input, 1)
         box.addLayout(row)
         self.hint = QLabel("/help · ! shell · ? chat · /type a task · /skill")
-        self.hint.setStyleSheet("color:#6f7682;font-size:12px;")
+        self.hint.setStyleSheet("color:#6f7682;font-size:13px;")
         box.addWidget(self.hint)
 
         self._tick = QTimer(self)
