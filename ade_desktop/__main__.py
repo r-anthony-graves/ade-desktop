@@ -20,6 +20,10 @@ from pathlib import Path
 
 log = logging.getLogger("ade_desktop")
 
+# The open crash-log handle, held for the life of the process. See
+# setup_crash_log.
+_CRASH_LOG = None
+
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ade_desktop")
@@ -46,6 +50,55 @@ def setup_logging(directory: Path) -> None:
     # about once a second, which buried the transitions this log is for.
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def crash_log_path(directory: Path) -> Path:
+    return Path(directory) / "crash.log"
+
+
+def setup_crash_log(directory: Path):
+    """Make a native crash leave a Python traceback behind.
+
+    Measured 2026-09-22/23: the app died five times in two days with
+    `0xc0000005` inside `python314.dll` and left nothing actionable. Windows
+    recorded a fault offset; `desktop.log` recorded an ordinary INFO line and
+    then stopped mid-air. There is no console to print to -- `run-desktop.ps1`
+    launches `pythonw.exe` on purpose -- and `faulthandler` is off by default,
+    so the one artefact that names the faulting line did not exist. The suite
+    does not reproduce the crash (600 tests pass), so until one names its line
+    any fix is a guess.
+
+    APPENDED, never truncated: a crash log cleared at startup loses the crash
+    you relaunched in order to read. Each run marks itself instead.
+
+    The handle is returned and deliberately kept for the life of the process
+    -- `faulthandler` writes from the signal handler using this fd, and
+    closing it would turn the next crash silent again.
+
+    Never fatal, for the same reason `setup_logging` is not: an app that
+    refuses to start because it could not open a diagnostic is worse than one
+    that starts without it.
+    """
+    try:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        handle = open(crash_log_path(directory), "a", encoding="utf-8",
+                      errors="replace")
+    except OSError:
+        return None
+    try:
+        handle.write("=== ade_desktop %s pid %d ===\n"
+                     % (time.strftime("%Y-%m-%dT%H:%M:%S"), os.getpid()))
+        handle.flush()
+        import faulthandler
+        faulthandler.enable(file=handle, all_threads=True)
+    except Exception:                   # noqa: BLE001 - diagnostics only
+        try:
+            handle.close()
+        except Exception:               # noqa: BLE001
+            pass
+        return None
+    return handle
 
 
 def configure_app(app) -> None:
@@ -240,6 +293,12 @@ def main(argv: list[str] | None = None) -> int:
     configure_app(app)
     directory = state_dir()
     setup_logging(directory)
+    # Bound to a module global, not a local: `faulthandler` writes through
+    # this fd from the signal handler, so if the handle were collected when
+    # main()'s frame went away the next access violation would be silent
+    # again -- which is the whole failure this exists to end.
+    global _CRASH_LOG
+    _CRASH_LOG = setup_crash_log(directory)
     log.info("starting (smoke=%s)", args.smoke)
 
     if args.smoke:
