@@ -198,3 +198,33 @@ def test_online_is_reachable_not_healthy():
                       "blocking_reason": "x"}) is True
     assert is_online({"error": "ConnectError: refused"}) is False
     assert is_online("garbage") is False
+
+
+def test_a_dropped_status_client_is_freed_at_once(qapp):
+    """The poller is the app's only cross-thread emitter: three QTimers on the
+    GUI thread, a ThreadPoolExecutor, and `signal.emit(...)` called from a
+    worker. If a dropped one is cyclic garbage, the collector frees it -- and
+    its pool, and its timers -- at a moment of its choosing, possibly while a
+    worker is mid-emit. That is the shape that crashed the trader's suite 6 of
+    6 on 2026-09-17.
+
+    `gc.disable()` is the test: with the collector running a cycle is freed
+    eventually and the weakref looks fine.
+    """
+    import gc
+    import weakref
+
+    from ade_desktop.ade_status import AdeStatusClient
+
+    gc.collect()
+    gc.disable()
+    try:
+        client = AdeStatusClient(base="http://127.0.0.1:1",
+                                 fetch=lambda url: {"status": "up"})
+        client.poll_health()
+        client.stop()
+        ref = weakref.ref(client)
+        del client
+        assert ref() is None, "the status client survived its last reference"
+    finally:
+        gc.enable()

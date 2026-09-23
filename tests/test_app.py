@@ -329,3 +329,34 @@ def test_switching_sections_switches_to_that_section_s_chat(qapp, tmp_path):
     assert win.side.currentWidget() is pm_chat
     win.show_section("Trader")
     assert win.side.currentWidget() is trader_chat
+
+
+def test_a_dropped_window_is_freed_at_once(qapp, tmp_path):
+    """The piece-1 lesson, applied to the window that owns everything else.
+
+    Seven panels already carry this guard; the frame holding them did not.
+    That matters more than any one panel: DesktopWindow owns the status
+    poller, the sections, the tray and the chats, so if IT is cyclic garbage
+    the collector tears all of them down at a moment of its choosing -- and
+    the poller emits from a worker thread. That is the exact shape that
+    crashed the trader's suite 6 of 6 on 2026-09-17, and the shape of the five
+    0xc0000005 access violations this app took on 2026-09-21/22.
+
+    `gc.disable()` is what makes it a real test: with the collector running,
+    a cyclic window is freed EVENTUALLY and the weakref looks fine.
+    """
+    import gc
+    import weakref
+
+    gc.collect()
+    gc.disable()
+    try:
+        win, status, _, _ = _window(tmp_path, tray=False)
+        status.health.emit(
+            {"status": "up", "may_execute_tools": True, "blocking_reason": "",
+             "subsystems": {}})
+        ref = weakref.ref(win)
+        del win
+        assert ref() is None, "the window survived its last reference"
+    finally:
+        gc.enable()
