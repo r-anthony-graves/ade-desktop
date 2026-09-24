@@ -1,7 +1,8 @@
 """The microphone and the speaker, with the device and the player faked:
 mute really closes the stream, the level is throttled, an utterance crosses
-to the UI thread, a reply is clipped like the avatar's, the mouth follows
-the WAV, a new reply stops the old one, and a fault is reported once."""
+to the UI thread, a whole reply is spoken (only the narration filter still
+bites), the mouth follows the WAV, a new reply stops the old one, and a
+fault is reported once."""
 
 import gc
 import math
@@ -183,14 +184,32 @@ def test_a_stream_that_fails_to_start_is_closed():
 # -------------------------------------------------------------- the speaker
 
 
-def test_clip_for_speech_is_the_avatars_rule():
-    assert clip_for_speech("Done. Then more text here.") == "Done."
+def test_clip_for_speech_speaks_whole_replies():
+    """The char cap and the first-sentence rule were both removed 2026-09-24
+    (Ray: "make the char limit unlimited") -- a whole multi-sentence reply
+    now survives intact. The narration filter is unrelated to length and
+    still bites."""
+    assert clip_for_speech("Done. Then more text here.") == "Done. Then more text here."
     assert clip_for_speech("  hello   there  ") == "hello there"
     assert clip_for_speech("The user asks about X. Fine.") == ""
-    long = "word " * 80
+    long = ("word " * 80).strip()
     clipped = clip_for_speech(long)
-    assert len(clipped) <= MAX_SPOKEN_CHARS + 1 and clipped.endswith(".")
+    assert clipped == long
+    assert len(clipped) > MAX_SPOKEN_CHARS
     assert clip_for_speech("") == ""
+
+
+def test_clip_for_speech_still_hard_cuts_with_an_explicit_cap(monkeypatch):
+    """The cutting mechanism itself still works -- it is just not applied by
+    default (MAX_SPOKEN_CHARS == 0), so a future limit is one value, not
+    restored code."""
+    from ade_desktop.voice import speaker as speaker_module
+
+    monkeypatch.setattr(speaker_module, "MAX_SPOKEN_CHARS", 160)
+    long = "word " * 80
+    clipped = speaker_module.clip_for_speech(long)
+    assert clipped
+    assert len(clipped) <= 160 and clipped.endswith(".")
 
 
 class FakePlayer:
@@ -230,7 +249,10 @@ def test_speak_posts_the_clip_and_plays_the_wav(qapp, tmp_path, pump):
     sp.started.connect(started.append)
     assert sp.speak("All tests pass. Here are the details...") is True
     assert pump(lambda: bool(started))
-    assert posted == [("http://ade/v1/voice/speak", {"text": "All tests pass."}, 180.0)]
+    assert posted == [
+        ("http://ade/v1/voice/speak",
+         {"text": "All tests pass. Here are the details..."}, 300.0)
+    ]
     assert len(player.played) == 1 and started[0] == pytest.approx(0.4, abs=0.03)
     sp.close()
 
