@@ -341,6 +341,20 @@ def test_the_wake_word_startles_the_orb_and_opens_ade(rig):
 
 
 def test_replies_are_spoken_only_when_speaking_is_on(rig, pump):
+    """What this test is FOR is the on/off gate, not the wording.
+
+    It asserted the first sentence only -- "Everything is great." -- which
+    was Maya1's 160-char first-sentence clip. bfccfa4 removed that at Ray's
+    word ("make the char limit unlimited") and the assertion was left
+    behind, so this has been red since 2026-09-24 against code that is
+    doing exactly what was asked of it.
+
+    The whole reply is now expected. How clipping itself behaves, including
+    the cap when MAX_SPOKEN_CHARS is set, belongs to
+    test_voice_io.py::test_clip_for_speech_speaks_whole_replies and is not
+    duplicated here -- two copies of that rule is how one of them goes
+    stale without anyone noticing.
+    """
     rig.ctl.start(open_mic=False)
     rig.panel.send("hello")
     rig.client.done.emit("r1", {"answer": "All good. More detail follows."})
@@ -350,7 +364,7 @@ def test_replies_are_spoken_only_when_speaking_is_on(rig, pump):
     rig.panel.send("again")
     rig.client.done.emit("r2", {"answer": "Everything is great. Details."})
     assert pump(lambda: bool(rig.player.played))
-    assert rig.spoken == ["Everything is great."]
+    assert rig.spoken == ["Everything is great. Details."]
     assert rig.mood.frame()["tint"] is not None                 # the reply's sentiment
     assert load_state(rig.state)["orb"]["speak"] is True
 
