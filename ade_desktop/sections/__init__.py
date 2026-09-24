@@ -1,6 +1,6 @@
 """The sections the rail lists. Only sections that EXIST are listed: a
 greyed-out button for an unbuilt section reads as broken. Later pieces
-(Ade, PM, QA, Path, Code) append to build_sections()."""
+(Ade, PM, QA, Path) append to build_sections()."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ def placeholder(name: str, message: str) -> Section:
 def build_sections(active=None) -> list[Section]:
     """`active` is the app's one ActiveProject; PM (and QA after it) share
     it. None builds a private one -- a test, or a section on its own."""
-    from ade_desktop.sections.code import build_code_section
     from ade_desktop.sections.path import build_path_section
     from ade_desktop.sections.pm import build_pm_section
     from ade_desktop.sections.qa import build_qa_section
@@ -42,4 +41,4 @@ def build_sections(active=None) -> list[Section]:
 
     active = active if active is not None else ActiveProject()
     return [build_trader_section(trader_root()), build_pm_section(active),
-            build_qa_section(active), build_path_section(), build_code_section()]
+            build_qa_section(active), build_path_section()]

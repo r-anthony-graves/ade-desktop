@@ -37,11 +37,11 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     report = json.loads(proc.stdout)
     assert report["ok"] is True
     assert isinstance(report["ade_polled"], bool)
-    assert report["sections"] == ["General", "Trader", "PM", "QA", "Path", "Code"]
+    assert report["sections"] == ["General", "Trader", "PM", "QA", "Path"]
     assert report["panel"] == {"tabs": ["Chat", "Shell"], "open": True}
     # a chat per section, each on its own Ade OS topic (2026-09-18)
-    assert report["chats"] == ["General", "Trader", "PM", "QA", "Path", "Code"]
-    assert len(report["chat_topics"]) == 6 and "u/local/desktop" in report["chat_topics"]
+    assert report["chats"] == ["General", "Trader", "PM", "QA", "Path"]
+    assert len(report["chat_topics"]) == 5 and "u/local/desktop" in report["chat_topics"]
     assert report["trader"] == "panel", report.get("trader_reason")
     assert set(report["trader_pills"]) == {
         "pill_desk", "pill_kraken", "pill_engine", "pill_mode"}
@@ -78,3 +78,32 @@ def test_the_log_records_transitions_not_every_poll(tmp_path):
             handler.close()
         for name, level in levels.items():
             logging.getLogger(name).setLevel(level)
+
+
+def test_the_code_section_is_gone(qapp, isolated_trader_imports):
+    """Ray, 2026-09-24, requirement 6: backlog the code tab and remove.
+    Falsify by re-adding build_code_section() to build_sections().
+
+    `qapp`: build_sections() constructs real widgets, and creating a QWidget
+    with no QApplication aborts the interpreter outright -- it does not
+    raise, so without it this file dies mid-collection and the run reports
+    nothing at all.
+
+    `isolated_trader_imports`: build_sections() imports the REAL trader from
+    D:/tradinglocal and leaves `agent` and `engine` in sys.modules, which
+    then answers test_trader_section.py's imports of its own fake roots --
+    that file runs next, alphabetically. Measured: without this fixture
+    three of its tests fail in the full suite while passing alone."""
+    from ade_desktop.sections import build_sections
+    names = [s.name for s in build_sections()]
+    assert "Code" not in names
+    assert names == ["Trader", "PM", "QA", "Path"]
+
+
+def test_nothing_imports_the_code_package():
+    import importlib
+    try:
+        importlib.import_module("ade_desktop.sections.code")
+    except ModuleNotFoundError:
+        return
+    raise AssertionError("ade_desktop.sections.code still exists")

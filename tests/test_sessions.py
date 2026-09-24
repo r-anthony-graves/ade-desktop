@@ -18,18 +18,13 @@ def test_general_keeps_today_s_thread_topic_and_terminal():
 
 
 def test_every_section_has_a_chat_of_its_own():
-    specs = [session_for(n) for n in ("Trader", "PM", "QA", "Path", "Code")]
-    assert len({s.threads_file for s in specs} | {"threads.json"}) == 6
-    assert len({s.topic for s in specs} | {TOPIC}) == 6
-    assert len({s.terminal for s in specs} | {SESSION}) == 6
+    specs = [session_for(n) for n in ("Trader", "PM", "QA", "Path")]
+    assert len({s.threads_file for s in specs} | {"threads.json"}) == 5
+    assert len({s.topic for s in specs} | {TOPIC}) == 5
+    assert len({s.terminal for s in specs} | {SESSION}) == 5
     pm = session_for("PM")
     assert (pm.threads_file, pm.topic, pm.terminal) == (
         "threads-pm.json", "u/local/desktop-pm", "ade-desktop-chat-pm")
-
-
-def test_the_code_chat_never_shares_the_code_terminal_pane_s_session():
-    from ade_desktop.sections.code.client import SESSION as CODE_PANE
-    assert session_for("Code").terminal != CODE_PANE
 
 
 def test_a_name_becomes_a_safe_slug():
