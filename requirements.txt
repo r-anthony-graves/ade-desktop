@@ -13,3 +13,9 @@ pytest==9.1.1
 # audio (QtMultimedia) lives in PySide6-Addons with QtWebEngine, which the
 # no-browser-engine rule above keeps out. RawInputStream needs no numpy.
 sounddevice==0.5.2
+# The shell (Ray, 2026-09-24, requirements 2/4/5/9). pyte is the VT state
+# machine -- pure Python, LGPLv3, no Qt; pywinpty is ConPTY, the same
+# binding adeos/api/term.py uses. Neither adds Qt, so the
+# PySide6-Essentials pin above is untouched and QtWebEngine stays out.
+pyte==0.8.2
+pywinpty==3.0.5
