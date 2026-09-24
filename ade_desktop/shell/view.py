@@ -18,7 +18,7 @@ the old one.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QFontMetricsF, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -99,6 +99,26 @@ class TerminalView(QWidget):
     def _cell(self) -> tuple[float, float]:
         return (max(1.0, self._metrics.horizontalAdvance("M")),
                 max(1.0, self._metrics.height()))
+
+    def sizeHint(self):                         # noqa: N802 -- Qt's name
+        """80x24, the size a terminal has always asked for.
+
+        THIS IS LOAD-BEARING, not decoration. A bare QWidget has no size
+        hint, and a QSplitter's INITIAL division comes from its children's
+        hints -- setStretchFactor only shares out EXTRA space on a later
+        resize. Without this the shell opened 94 px tall inside a 756 px
+        column and the terminal got 49 px: three rows. It worked perfectly
+        and was invisible, which is how Ray came to report, correctly, that
+        the shell "does not open, just has a tab".
+        """
+        cw, ch = self._cell()
+        return QSize(int(cw * 80), int(ch * 24))
+
+    def minimumSizeHint(self):                  # noqa: N802 -- Qt's name
+        """Four rows: enough that a dragged divider cannot hide the shell
+        entirely and leave a tab strip over nothing."""
+        cw, ch = self._cell()
+        return QSize(int(cw * 20), int(ch * 4))
 
     def grid(self) -> tuple[int, int]:
         cw, ch = self._cell()

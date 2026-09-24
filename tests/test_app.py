@@ -373,3 +373,42 @@ def test_a_dropped_window_is_freed_at_once(qapp, tmp_path):
         assert ref() is None, "the window survived its last reference"
     finally:
         gc.enable()
+
+
+def test_general_stacks_chat_over_shell_with_a_usable_shell(qapp, tmp_path):
+    """Ray, 2026-09-24: "the powershell does not open just has a tab".
+
+    It HAD opened -- the pty was alive and the prompt was on its screen --
+    but the pane was 94 px of a 756 px column and the terminal got 49 px,
+    three rows. QSplitter divides by sizeHint on first show and a bare
+    QWidget has none; setStretchFactor only shares EXTRA space on a later
+    resize. So the shell asks for 80x24 now, and General's first-run split
+    is set explicitly rather than left to whichever child asks loudest.
+
+    Falsify by removing the GENERAL_SPLIT branch from _restore_state --
+    verified: chat_h > shell_h then fails. Removing TerminalView.sizeHint
+    alone does NOT break this any more, because the explicit split now
+    decides the first run; that hint is guarded by
+    test_shell_view.py::test_the_terminal_asks_for_a_real_size, and it
+    still matters for every other container the view is dropped into."""
+    from ade_desktop.shell.pane import ShellPane
+
+    log = []
+    shell = ShellPane(autostart=False)          # no real pwsh in a unit test
+    win = DesktopWindow([Section("Trader", QLabel("t"))], FakeStatus(),
+                        state_path=tmp_path / "window.json",
+                        tray_available=False, quit_fn=lambda: log.append("quit"),
+                        panel=FakePanel(log, "general"), shell=shell)
+    win.resize(1200, 800)
+    win.show()
+    qapp.processEvents()
+
+    chat_h, shell_h = win.general_page.sizes()
+    assert shell_h > 0, "the shell pane got no height at all"
+    # chat leads, but the shell is a usable terminal, not a sliver
+    assert chat_h > shell_h, (chat_h, shell_h)
+    assert shell_h > 0.25 * (chat_h + shell_h), (chat_h, shell_h)
+    view = shell.current()
+    assert view is not None
+    assert view.grid()[1] >= 10, f"only {view.grid()[1]} rows: {view.height()}px"
+    win.quit_app()

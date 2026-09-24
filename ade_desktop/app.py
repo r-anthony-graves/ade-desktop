@@ -36,6 +36,10 @@ DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
 PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
 ZOOM_STEP = 0.1
+# General's chat : shell, on a first run. Deliberate rather than emergent:
+# left to sizeHint alone the terminal asks for 80x24 and WINS, which is as
+# wrong as the 49 px it got when it asked for nothing.
+GENERAL_SPLIT = (3, 2)
 # Ray, 2026-09-18: "need a general chat not just trader pm and qa, add a
 # general", then "create chat sessions for each so chats dont overlap". The
 # rail's first section is General's chat, full size; every other section has
@@ -540,10 +544,16 @@ class DesktopWindow(QMainWindow):
         self._panel_width = clamp_panel_width(state.get("panel_width", PANEL_DEFAULT_W))
         self.set_zoom(state.get("zoom", 1.0))
         split = state.get("general_split")
-        if (self.shell is not None and isinstance(split, list)
-                and len(split) == 2 and all(isinstance(n, int) and n > 0
-                                            for n in split)):
-            self.general_page.setSizes(split)
+        if self.shell is not None:
+            if (isinstance(split, list) and len(split) == 2
+                    and all(isinstance(n, int) and n > 0 for n in split)):
+                self.general_page.setSizes(split)
+            else:
+                chat, shell = GENERAL_SPLIT
+                height = max(1, rect.h)
+                self.general_page.setSizes(
+                    [height * chat // (chat + shell),
+                     height * shell // (chat + shell)])
         self._side_open = state.get("panel_open", True) is not False
         # Selecting the section shows (or hides) its side chat.
         names = self.section_names()

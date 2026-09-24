@@ -138,3 +138,29 @@ def test_it_paints_without_raising(qapp):
     pixmap = QPixmap(view.size())
     view.render(pixmap)
     assert not pixmap.isNull()
+
+
+def test_the_terminal_asks_for_a_real_size(qapp):
+    """A bare QWidget has NO sizeHint, and QSplitter's initial split comes
+    from sizeHint -- setStretchFactor only distributes EXTRA space on a
+    resize. Measured 2026-09-24: without this the shell pane opened 94 px
+    tall inside a 756 px column and the terminal got 49 px -- three rows.
+    Ray saw a tab strip and a sliver, and reported the shell as not opening.
+
+    Falsify by deleting sizeHint(): this goes red and the pane collapses."""
+    view = TerminalView()
+    cell_h = view.sizeHint().height() / 24    # the hint IS 24 rows
+    hint = view.sizeHint()
+    assert hint.width() > 400, hint
+    assert hint.height() >= 20 * cell_h, hint
+    floor = view.minimumSizeHint()
+    assert floor.height() >= 4 * cell_h, floor    # never squashed to nothing
+    assert floor.height() < hint.height(), "a floor at the hint cannot shrink"
+
+
+def test_the_hint_follows_the_font(qapp):
+    """Zoom in and the terminal should ask for more room, not the same."""
+    view = TerminalView()
+    small = view.sizeHint().height()
+    view.set_font_px(30)
+    assert view.sizeHint().height() > small
