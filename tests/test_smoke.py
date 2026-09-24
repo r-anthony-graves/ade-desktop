@@ -38,7 +38,9 @@ def test_smoke_exits_zero_writes_a_png_and_reports(tmp_path):
     assert report["ok"] is True
     assert isinstance(report["ade_polled"], bool)
     assert report["sections"] == ["General", "Trader", "PM", "QA", "Path"]
-    assert report["panel"] == {"tabs": ["Chat", "Shell"], "open": True}
+    assert report["panel"] == {"open": True}
+    # req 1: one shell, on General only
+    assert report["shell"] == {"sessions": 1}
     # a chat per section, each on its own Ade OS topic (2026-09-18)
     assert report["chats"] == ["General", "Trader", "PM", "QA", "Path"]
     assert len(report["chat_topics"]) == 5 and "u/local/desktop" in report["chat_topics"]

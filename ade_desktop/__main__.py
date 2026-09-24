@@ -144,6 +144,7 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     from ade_desktop.conversation.sessions import GENERAL, ApprovalRouter, session_for
     from ade_desktop.conversation.threads import ThreadStore
     from ade_desktop.sections import build_sections
+    from ade_desktop.shell.pane import ShellPane
     from ade_desktop.workspace.active import ActiveProject
 
     # A chat per section (Ray, 2026-09-18): each with its own thread file
@@ -165,9 +166,11 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     active = ActiveProject(state_path)
     sections = build_sections(active)
     side = {section.name: chat(section.name) for section in sections}
+    # ONE shell pane, on the General page only (Ray, 2026-09-24, req 1).
     win = DesktopWindow(sections, AdeStatusClient(),
                         state_path=state_path, quit_fn=quit_fn, panel=panel,
-                        side_panels=side, approvals=approvals)
+                        side_panels=side, approvals=approvals,
+                        shell=ShellPane())
     router.setParent(win)
     approvals.setParent(win)
     win.approval_router = router
@@ -231,9 +234,9 @@ def smoke_report(win) -> dict:
                    "placeholder" if trader.placeholder_reason else "panel"),
         "trader_reason": trader.placeholder_reason if trader else None,
         "trader_pills": pills,
-        "panel": ({"tabs": [win.panel.tabs.tabText(i)
-                            for i in range(win.panel.tabs.count())],
-                   "open": win.panel_open()} if win.panel is not None else None),
+        "panel": ({"open": win.panel_open()} if win.panel is not None else None),
+        "shell": (None if win.shell is None
+                  else {"sessions": win.shell.session_count()}),
         "chats": ([GENERAL] if win.panel is not None else []) + list(win.side_panels),
         "chat_topics": sorted({c.client.topic for c in win.all_panels()}),
     }

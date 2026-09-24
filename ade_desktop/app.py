@@ -95,7 +95,7 @@ class DesktopWindow(QMainWindow):
                  tray_available: bool | None = None,
                  quit_fn: Callable[[], None] | None = None,
                  panel=None, side_panels=None, approvals=None, confirm_quit=None,
-                 parent=None) -> None:
+                 shell=None, parent=None) -> None:
         super().__init__(parent)
         self.sections = list(sections)
         self.status = status
@@ -105,6 +105,11 @@ class DesktopWindow(QMainWindow):
         # watcher (the orb counts from it); each chat sees only its own.
         self.panel = panel
         self.side_panels = dict(side_panels or {})
+        # Ray, 2026-09-24, requirements 1 and 8: "the shell only is needed
+        # in the general chat tab" and "stack the chat and shell session on
+        # the right col". ONE shell pane, under General's chat. Every other
+        # page keeps its side chat and has no shell at all.
+        self.shell = shell
         self.approvals = approvals if approvals is not None else getattr(panel, "watcher", None)
         self._panel_width = PANEL_DEFAULT_W
         self._state_path = Path(state_path)
@@ -185,11 +190,18 @@ class DesktopWindow(QMainWindow):
             self.stack.addWidget(section.widget)
         self._side_open = True          # the side chat's open state, shared by sections
         if panel is not None:
-            self.general_page = QWidget()
+            # Chat on top, shell underneath, divider draggable. A vertical
+            # splitter rather than a tab pair: you watch a command run while
+            # you type the next question, which tabs cannot do.
+            self.general_page = QSplitter(Qt.Orientation.Vertical)
             self.general_page.setObjectName("generalPage")
-            self._general_box = QVBoxLayout(self.general_page)
-            self._general_box.setContentsMargins(0, 0, 0, 0)
-            self._general_box.addWidget(panel)      # General's own chat, for good
+            self.general_page.setChildrenCollapsible(False)
+            self.general_page.addWidget(panel)      # General's own chat, for good
+            if shell is not None:
+                self.general_page.addWidget(shell)
+                self.general_page.setStretchFactor(0, 3)
+                self.general_page.setStretchFactor(1, 2)
+                self.zoom_changed.connect(shell.apply_zoom)
             self.rail.insertItem(0, GENERAL)
             self.stack.insertWidget(0, self.general_page)
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -455,6 +467,11 @@ class DesktopWindow(QMainWindow):
                 self.orb_controller.stop()
             except Exception:  # noqa: BLE001 -- quitting must finish
                 log.exception("stopping the orb failed")
+        if self.shell is not None:
+            try:
+                self.shell.stop_all()   # no window, no shell
+            except Exception:  # noqa: BLE001 -- quitting must finish
+                log.exception("stopping the shell failed")
         for chat in self.all_panels():
             for step in (chat.on_quit, chat.client.stop, chat.watcher.stop):
                 try:
@@ -498,6 +515,8 @@ class DesktopWindow(QMainWindow):
             "panel_open": self.panel_open(),
             "panel_width": self._panel_width,
             "zoom": self._zoom,
+            "general_split": (list(self.general_page.sizes())
+                              if self.shell is not None else None),
         })
         save_state(self._state_path, state)
 
@@ -513,6 +532,11 @@ class DesktopWindow(QMainWindow):
         self._start_maximized = bool(state.get("maximized"))
         self._panel_width = clamp_panel_width(state.get("panel_width", PANEL_DEFAULT_W))
         self.set_zoom(state.get("zoom", 1.0))
+        split = state.get("general_split")
+        if (self.shell is not None and isinstance(split, list)
+                and len(split) == 2 and all(isinstance(n, int) and n > 0
+                                            for n in split)):
+            self.general_page.setSizes(split)
         self._side_open = state.get("panel_open", True) is not False
         # Selecting the section shows (or hides) its side chat.
         names = self.section_names()

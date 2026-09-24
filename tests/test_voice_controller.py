@@ -102,11 +102,14 @@ def test_overheard_dictation_never_touches_a_draft_or_writes_a_note(h):
     assert h.panel.input.text() == "my draft" and len(h.notes()) == before
 
 
-def test_overheard_dictation_never_takes_focus_or_changes_tab(h):
-    h.panel.set_tab("shell")
+def test_overheard_dictation_never_takes_focus(h):
+    """The tab half of this test retired with the Shell tab on 2026-09-24
+    (requirement 1): there is one tab now, so "never changes tab" is no
+    longer a thing that can go wrong. Never STEALING FOCUS still is --
+    overheard speech must not pull the caret out from under whatever Ray is
+    typing into."""
     assert h.ctl.on_text("so what did you think", "whisper") == "ignored"
-    assert h.panel.current_tab() == "shell" and h.panel.input.text() == ""
-    h.panel.set_tab("chat")
+    assert h.panel.input.text() == ""
     focused = []
     h.panel.input.setFocus = lambda *a: focused.append(1)   # offscreen has no focus to read
     assert h.ctl.on_text("so what did you think", "whisper") == "ignored"

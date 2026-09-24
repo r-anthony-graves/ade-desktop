@@ -25,7 +25,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-    QTabBar, QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget,
 )
 
 from ade_desktop.conversation.commands import BY_NAME, COMMAND_NAMES, help_text, run_local
@@ -44,7 +44,13 @@ from ade_desktop.conversation.widgets import (
 )
 
 RENDER_WINDOW = 300
-TABS = ("chat", "shell")
+# Ray, 2026-09-24, requirement 1: "the shell only is needed in the general
+# chat tab, remove it from the others". The Shell TAB is gone from every
+# chat panel; the shell is now a real terminal of its own on the General
+# page (ade_desktop/shell/). current_tab() and set_tab() survive as the one
+# word "chat" rather than being deleted from twenty call sites -- the panel
+# is single-tab now, and saying so once is smaller than saying it everywhere.
+TABS = ("chat",)
 BUSY_NOTE = ("Ade is still working on the previous turn - press Enter again "
              "once it settles.")
 RETRY = "\n\nThe message is staged in the input - press Enter to retry."
@@ -59,7 +65,6 @@ CANCELLED_WAIT_NOTE = ("Cancelled: stopped waiting. Ade OS cannot interrupt this
 # an upload has no Cancel -- its files go one after another, locally, fast.
 CANCELLABLE = ("ask", "task", "chat", "shell")
 ASK_LABEL = "Ask"
-SHELL_LABEL = "Shell - NOT gated by Permission.check()"
 
 
 def _turn_id() -> str:
@@ -136,23 +141,15 @@ class ConversationPanel(QWidget):
         if self.store.load_note:
             self.store.push("chat", "system", "text", self.store.load_note)
         self.chips.set_skills(self.store.skills)
-        start = TABS.index(self.store.tab) if self.store.tab in TABS else 0
-        self.tabs.blockSignals(True)
-        self.tabs.setCurrentIndex(start)
-        self.tabs.blockSignals(False)
-        self._on_tab_changed(start)   # the one full render at start
+        self.store.tab = "chat"
+        self.input.set_history(self._histories["chat"])
+        self._render()                # the one full render at start
 
     # -- layout -------------------------------------------------------------
 
     def _build(self) -> None:
         box = QVBoxLayout(self)
         box.setContentsMargins(8, 6, 8, 8)
-        self.tabs = QTabBar()
-        self.tabs.addTab("Chat")
-        self.tabs.addTab("Shell")
-        self.tabs.setExpanding(False)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        box.addWidget(self.tabs)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -207,29 +204,17 @@ class ConversationPanel(QWidget):
         self._scroll_timer.setInterval(0)
         self._scroll_timer.timeout.connect(self._to_bottom)
 
-    # -- tabs and rendering -------------------------------------------------
+    # -- rendering ----------------------------------------------------------
 
     def current_tab(self) -> str:
-        return TABS[max(0, self.tabs.currentIndex())]
+        """There is one. Kept as a method so the twenty call sites that ask
+        do not each have to be edited to say the same word."""
+        return "chat"
 
     def set_tab(self, tab: str) -> None:
-        """Switch tabs; renders only on a REAL change (a re-render rebuilds
-        up to 300 widgets, so it must not happen on every message)."""
-        index = TABS.index(tab) if tab in TABS else 0
-        if self.tabs.currentIndex() != index:
-            self.tabs.setCurrentIndex(index)   # emits -> _on_tab_changed
-
-    def _on_tab_changed(self, index: int) -> None:
-        tab = TABS[max(0, index)]
-        self.store.tab = tab
-        shell = tab == "shell"
-        self.route_label.setText(SHELL_LABEL if shell else ASK_LABEL)
-        self.route_label.setStyleSheet(
-            "color:#ffffff;background:#d95757;padding:2px 6px;border-radius:3px;"
-            if shell else "color:#9aa1ab;")
-        self.input.set_history(self._histories[tab])
-        self._render()
-        self._save_soon()
+        """A no-op since the Shell tab left (2026-09-24). Kept so the code
+        that used to switch back to Chat after routing still reads as
+        intent rather than as a deletion."""
 
     def view_messages(self, tab: str) -> list[dict]:
         return list(self.store.tab_messages(tab))

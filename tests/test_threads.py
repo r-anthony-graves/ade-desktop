@@ -11,12 +11,41 @@ def test_round_trip_and_working_is_never_saved(tmp_path):
     s.push("chat", "user", "ask", "hi")
     s.push("chat", "system", "working", "Working…")
     s.skills = ["ade-brainstorming"]
-    s.tab = "shell"
     s.save()
     t = ThreadStore(tmp_path / "threads.json")
     assert [m["text"] for m in t.chat] == ["hi"]
-    assert t.skills == ["ade-brainstorming"] and t.tab == "shell"
+    assert t.skills == ["ade-brainstorming"] and t.tab == "chat"
     assert t.load_note is None
+
+
+def test_a_legacy_shell_thread_survives_a_save(tmp_path):
+    """The Shell tab left on 2026-09-24, but every existing
+    threads-*.json still has a "shell" array and save() writes a fixed
+    dict -- so dropping it from TABS without carrying the old data forward
+    would delete every section's shell history on the first save after the
+    upgrade. Nothing reads it; nothing loses it.
+
+    Falsify by writing keep(self.shell) in save() instead of
+    self._legacy_shell."""
+    path = tmp_path / "threads.json"
+    path.write_text(json.dumps({
+        "chat": [], "archive": [], "skills": [], "tab": "chat",
+        "shell": [{"id": "1", "ts": 1, "role": "user", "kind": "shell",
+                   "text": "dir", "meta": {}}]}), encoding="utf-8")
+    store = ThreadStore(path)
+    store.push("chat", "user", "ask", "something new")
+    store.save()
+    again = json.loads(path.read_text(encoding="utf-8"))
+    assert len(again["shell"]) == 1, "legacy shell history was destroyed"
+    assert again["shell"][0]["text"] == "dir"
+
+
+def test_a_file_with_no_shell_key_saves_cleanly(tmp_path):
+    """A fresh install has no legacy array; save() must not raise."""
+    store = ThreadStore(tmp_path / "fresh.json")
+    store.push("chat", "user", "ask", "hi")
+    store.save()
+    assert json.loads((tmp_path / "fresh.json").read_text(encoding="utf-8"))["shell"] == []
 
 
 def test_clear_compact_restore(tmp_path):

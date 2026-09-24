@@ -110,14 +110,28 @@ def test_a_bang_command_on_chat_stays_on_chat(qapp, tmp_path):
     assert client.calls[-1][0] == "ask"
 
 
-def test_the_shell_tab_is_labelled_and_routes_to_the_terminal(qapp, tmp_path):
+def test_bang_still_routes_to_ade_os_s_terminal(qapp, tmp_path):
+    """The Shell TAB left on 2026-09-24 (requirement 1), but `!` did not:
+    `!` means "Ade, run this" on Ade OS's box, while the new shell pane is
+    Ray's own keyboard on this one. Collapsing them would quietly move
+    Ade's shell onto whichever machine the app is running on.
+
+    Its answer now lands in Chat, since that is the only tab there is."""
     panel, client, _, _ = _panel(tmp_path)
-    panel.set_tab("shell")
-    assert "NOT gated" in panel.route_label.text()
-    panel.send("dir")
+    panel.send("!dir")
     assert client.calls == [("shell", "dir")]
     client.done.emit("r1", {"ok": True, "output": "a.txt"})
-    assert texts(panel, "shell")[-1] == "a.txt"
+    assert texts(panel)[-1] == "a.txt"
+
+
+def test_there_is_no_shell_tab_any_more(qapp, tmp_path):
+    """Requirement 1. Falsify by restoring TABS = ("chat", "shell")."""
+    import ade_desktop.conversation.panel as panel_mod
+    panel, _, _, _ = _panel(tmp_path)
+    assert panel_mod.TABS == ("chat",)
+    assert not hasattr(panel_mod, "SHELL_LABEL")
+    assert not hasattr(panel, "tabs")
+    assert panel.current_tab() == "chat"
 
 
 def test_a_bare_command_streams_into_chat(qapp, tmp_path):
@@ -343,11 +357,10 @@ def test_a_shell_reply_that_reports_an_error_is_a_reply(qapp, tmp_path):
     """/v1/terminal answers 200 {ok:false, error:...} for a command that
     failed -- that is the command's answer, not a failed call."""
     panel, client, _, _ = _panel(tmp_path)
-    panel.set_tab("shell")
-    panel.send("sleep 99")
+    panel.send("!sleep 99")
     client.done.emit("r1", {"ok": False, "output": "", "error": "timed out after 30s"})
-    assert texts(panel, "shell")[-1] == "timed out after 30s"
-    assert panel.view_messages("shell")[-1]["kind"] == "shell"
+    assert texts(panel)[-1] == "timed out after 30s"
+    assert panel.view_messages("chat")[-1]["kind"] == "shell"
     assert panel.input.text() == ""
 
 

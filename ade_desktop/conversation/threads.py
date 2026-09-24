@@ -14,7 +14,12 @@ import time
 import uuid
 from pathlib import Path
 
-TABS = ("chat", "shell")
+# The Shell tab left on 2026-09-24 (requirement 1). "shell" is no longer a
+# tab -- but every existing threads-*.json still HAS one, and save() writes
+# a fixed dict, so dropping it from here without the _legacy_shell handling
+# below would delete every section's saved shell history on the first save
+# after the upgrade. Nothing reads it; nothing loses it either.
+TABS = ("chat",)
 MAX_MESSAGES = 4000   # the avatar's safety cap per tab
 MAX_ARCHIVE = 20      # newest batches kept
 COMPACT_KEEP = 20
@@ -56,7 +61,12 @@ class ThreadStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.chat: list[dict] = []
-        self.shell: list[dict] = []
+        self.shell: list[dict] = []     # legacy, never written to again
+        # Set BEFORE _load(): that method returns early on a missing or
+        # unreadable file, and save() reads this on every write. A default
+        # assigned only on the happy path is an AttributeError the first
+        # time a fresh install saves.
+        self._legacy_shell: list = []
         self.archive: list[dict] = []
         self.skills: list[str] = []
         self.tab = "chat"
@@ -143,6 +153,9 @@ class ThreadStore:
                 self.load_note = (f"{self.path.name} could not be read and "
                                   "could not be moved aside.")
             return
+        # Carried forward verbatim, never parsed: see the TABS comment.
+        legacy = data.get("shell")
+        self._legacy_shell = legacy if isinstance(legacy, list) else []
         for tab in TABS:
             if isinstance(data.get(tab), list):
                 repaired = [r for r in (_repair(m) for m in data[tab])
@@ -161,7 +174,7 @@ class ThreadStore:
         leaves a half file. Best effort: a failed save never raises."""
         def keep(msgs):
             return [m for m in msgs if m.get("kind") != "working"][-MAX_MESSAGES:]
-        out = {"chat": keep(self.chat), "shell": keep(self.shell),
+        out = {"chat": keep(self.chat), "shell": self._legacy_shell,
                "archive": self.archive[-MAX_ARCHIVE:],
                "skills": list(self.skills), "tab": self.tab}
         try:
