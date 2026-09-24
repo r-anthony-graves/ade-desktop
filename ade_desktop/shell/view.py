@@ -78,7 +78,15 @@ class TerminalView(QWidget):
         self._pending: list[str] = []
         self._dropped = 0
         self.screen = TerminalScreen(80, 24)
-        self.session = PtySession(self)
+        # NOT parented to this widget, deliberately. A closed tab calls
+        # deleteLater(), and Qt would then destroy a child PtySession while
+        # its reader thread is still inside self.output.emit() -- emitting
+        # from a destroyed sender is an access violation, not an exception.
+        # Unparented, the session outlives the widget until the reader
+        # thread drops its last reference, and Qt has already broken the
+        # connection to this (destroyed) receiver, so the emit goes nowhere
+        # instead of into freed memory.
+        self.session = PtySession()
         self.session.output.connect(self._on_output)
         self.session.exited.connect(self.exited)
         self._flush_timer = QTimer(self)

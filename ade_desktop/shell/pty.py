@@ -46,6 +46,9 @@ from PySide6.QtCore import QObject, Signal
 log = logging.getLogger("ade_desktop.shell.pty")
 
 READ_SIZE = 8192
+# How long stop() waits for the reader thread to leave read() before it
+# gives up on terminate(). Generous: the alternative to waiting is a crash.
+JOIN_TIMEOUT_S = 3.0
 
 
 def shell_command() -> str:
@@ -112,27 +115,50 @@ class PtySession(QObject):
             dimensions=(max(1, int(rows)), max(1, int(cols))),  # (rows, cols)
         )
         self._thread = threading.Thread(target=self._read_loop, daemon=True,
+                                        args=(self._proc,),
                                         name=f"pty-{self._proc.pid}")
         self._thread.start()
 
-    def _read_loop(self) -> None:
-        proc = self._proc
+    def _read_loop(self, proc) -> None:
+        """THE READER OWNS THE TEARDOWN, and that is a safety property, not
+        a style choice.
+
+        pywinpty's `read()` is a socket `recv()` fed by pywinpty's own
+        internal thread, and `terminate()` frees that socket. Calling
+        terminate() from the GUI thread while this one is inside read() is
+        a use-after-free, and Windows answers with `0xc0000005` -- which
+        kills the process outright and cannot be caught. Measured
+        2026-09-24: the end-to-end test crashed the interpreter on every
+        run until teardown moved in here.
+
+        So stop() only kills the process tree and returns. The dead shell
+        closes the pty, read() raises EOFError, and THIS thread -- the only
+        one that ever touches the socket -- terminates it on the way out.
+        Nothing is freed under a reader, because the reader is the freer.
+        """
         try:
-            while proc is not None and proc.isalive():
+            while proc.isalive():
                 try:
                     data = proc.read(READ_SIZE)
                 except EOFError:
                     break
                 except OSError:
-                    break               # terminate() from stop() lands here
+                    break
                 if data:
                     self.output.emit(data)      # queued: crosses to the GUI thread
+        except Exception:                       # noqa: BLE001 - the pty went away
+            pass
         finally:
-            if not self._stopping:
-                try:
-                    code = int(getattr(proc, "exitstatus", 0) or 0)
-                except (TypeError, ValueError):
-                    code = 0
+            stopping = self._stopping
+            try:
+                code = int(getattr(proc, "exitstatus", 0) or 0)
+            except (TypeError, ValueError):
+                code = 0
+            try:
+                proc.terminate(force=True)      # safe: we have left read()
+            except Exception:                   # noqa: BLE001 - already dead
+                pass
+            if not stopping:
                 self.exited.emit(code)
 
     def write(self, text: str) -> None:
@@ -154,15 +180,22 @@ class PtySession(QObject):
     def stop(self) -> None:
         """NO TAB, NO SHELL. Idempotent: quit calls it after a close did.
 
-        The tree goes FIRST, while its children can still be found under the
-        shell; terminating the shell first orphans them.
+        Kills the process TREE and returns. The children go first, while
+        they can still be found under the shell -- terminating the shell
+        alone orphans a native child (python, npm, pytest) that keeps
+        holding the pipe.
+
+        It does NOT terminate the pty, and must not: the reader thread is
+        sitting in a socket recv() and freeing that socket under it is an
+        access violation, which kills the app rather than raising. The
+        reader does it on the way out (see _read_loop). Nor does this wait
+        for the reader -- measured 2026-09-24, it takes ~5.3 s to notice
+        EOF, and quitting with four shells open must not take twenty
+        seconds. The thread is a daemon; the OS reclaims it either way.
         """
         proc, self._proc = self._proc, None
+        self._thread = None
         if proc is None:
             return
         self._stopping = True
         _taskkill_tree(getattr(proc, "pid", None))
-        try:
-            proc.terminate(force=True)
-        except Exception:               # noqa: BLE001 - already dead
-            pass
