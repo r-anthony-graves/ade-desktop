@@ -67,3 +67,29 @@ def test_a_bare_modifier_sends_nothing():
 
 def test_an_unknown_key_with_no_text_sends_nothing():
     assert sequence_for(Qt.Key.Key_VolumeUp, NONE, "") is None
+
+
+def test_ctrl_letters_do_not_depend_on_event_text():
+    """Measured 2026-09-24: a Ctrl+C key event can arrive with text() == '',
+    and the terminal then sent NOTHING at all -- Ray reported Ctrl+C not
+    working. The control code is now derived from the KEY, so an empty
+    text() cannot silence it.
+
+    Falsify by returning `text or None` for Ctrl+letter: this goes red."""
+    assert sequence_for(Qt.Key.Key_C, CTRL, "") == "\x03"
+    assert sequence_for(Qt.Key.Key_A, CTRL, "") == "\x01"
+    assert sequence_for(Qt.Key.Key_D, CTRL, "") == "\x04"
+    assert sequence_for(Qt.Key.Key_Z, CTRL, "") == "\x1a"
+
+
+def test_ctrl_letters_agree_with_what_qt_would_have_given():
+    """The derivation must match Qt's own folding, or the two disagree
+    whenever text() IS populated."""
+    for key, txt in ((Qt.Key.Key_C, "\x03"), (Qt.Key.Key_D, "\x04"),
+                     (Qt.Key.Key_Z, "\x1a"), (Qt.Key.Key_L, "\x0c")):
+        assert sequence_for(key, CTRL, txt) == txt
+
+
+def test_plain_letters_are_unaffected_by_the_ctrl_branch():
+    assert sequence_for(Qt.Key.Key_C, NONE, "c") == "c"
+    assert sequence_for(Qt.Key.Key_C, NONE, "C") == "C"

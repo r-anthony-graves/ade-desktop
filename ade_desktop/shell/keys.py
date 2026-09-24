@@ -59,7 +59,19 @@ def sequence_for(key, modifiers, text: str) -> str | None:
     special = _SPECIAL.get(key)
     if special is not None:
         return special
-    # Qt already folds Ctrl+letter into a control character in event.text()
-    # (Ctrl+C -> \x03), which is exactly what the pty wants -- so plain text
-    # passes through and the control codes come for free.
+    # Ctrl+<letter> is mapped HERE rather than trusted to event.text().
+    # Qt is documented to fold it into a control character (Ctrl+C -> \x03)
+    # and usually does -- but measured 2026-09-24, a Ctrl+C event can arrive
+    # with text() == '', and then this returned None and the terminal sent
+    # NOTHING. Deriving it from the key code cannot have that failure.
+    if modifiers & Qt.KeyboardModifier.ControlModifier:
+        code = int(key)
+        if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            return chr(code - int(Qt.Key.Key_A) + 1)      # Ctrl+A..Z -> 1..26
+        if key == Qt.Key.Key_BracketLeft:
+            return "\x1b"
+        if key == Qt.Key.Key_Backslash:
+            return "\x1c"
+        if key == Qt.Key.Key_BracketRight:
+            return "\x1d"
     return text or None
