@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ade_desktop.sections import Section, build_sections
 from ade_desktop.sections.trader import build_trader_section, trader_root
-from ade_desktop.theme import BASE_QSS, DESKTOP_QSS, stylesheet
+from ade_desktop.theme import BASE_QSS, DESKTOP_QSS, sizes_qss, stylesheet
 
 REAL_ROOT = Path(r"D:\tradinglocal")
 
@@ -95,5 +95,8 @@ def test_build_sections_is_trader_pm_qa_path(
 
 
 def test_stylesheet_uses_the_traders_own_qss_when_it_loaded():
-    assert stylesheet("TRADER {}") == "TRADER {}" + DESKTOP_QSS
-    assert stylesheet(None) == BASE_QSS + DESKTOP_QSS
+    # sizes_qss sits BETWEEN the base sheet and DESKTOP_QSS so the app's
+    # font ladder wins over the trader's own 15px without editing
+    # D:/tradinglocal (2026-09-24: it also carries the zoom scale).
+    assert stylesheet("TRADER {}") == "TRADER {}" + sizes_qss(1.0) + DESKTOP_QSS
+    assert stylesheet(None) == BASE_QSS + sizes_qss(1.0) + DESKTOP_QSS

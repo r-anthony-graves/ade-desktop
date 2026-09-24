@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMenu,
@@ -27,7 +27,7 @@ from ade_desktop.geometry import (
     save_state,
 )
 from ade_desktop.sections import Section
-from ade_desktop.theme import TONES, stylesheet
+from ade_desktop.theme import TONES, clamp_zoom, stylesheet
 
 log = logging.getLogger("ade_desktop.app")
 
@@ -35,6 +35,7 @@ ICON_PATH = Path(__file__).resolve().parent.parent / "icon.png"
 DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
 PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
+ZOOM_STEP = 0.1
 # Ray, 2026-09-18: "need a general chat not just trader pm and qa, add a
 # general", then "create chat sessions for each so chats dont overlap". The
 # rail's first section is General's chat, full size; every other section has
@@ -86,6 +87,10 @@ def _screen_rects() -> list[Rect]:
 
 
 class DesktopWindow(QMainWindow):
+    # Ctrl+= / Ctrl+- / Ctrl+0 restyle the app through QSS. The terminal
+    # paints itself, so QSS cannot reach it -- it takes the scale from here.
+    zoom_changed = Signal(float)
+
     def __init__(self, sections: list[Section], status, *, state_path: Path,
                  tray_available: bool | None = None,
                  quit_fn: Callable[[], None] | None = None,
@@ -113,8 +118,25 @@ class DesktopWindow(QMainWindow):
         self.setWindowTitle("Ade")
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
-        trader_qss = next((s.qss for s in self.sections if s.qss), None)
-        self.setStyleSheet(stylesheet(trader_qss))
+        self._trader_qss = next((s.qss for s in self.sections if s.qss), None)
+        self._zoom = 1.0
+        self.setStyleSheet(stylesheet(self._trader_qss))
+        # Ray, 2026-09-24, requirement 3. WindowShortcut, not Application:
+        # an app must not take a key from the rest of the desktop (the
+        # avatar's lesson with Alt+Space). Ctrl++ as well as Ctrl+=, because
+        # on most keyboards "Ctrl and plus" is physically Ctrl+Shift+=.
+        #
+        # CONNECTED, never activated=partial(self._bump, step): a partial
+        # holding a bound method is held STRONGLY by the shortcut, and the
+        # shortcut is the window's child -- a cycle the collector has to
+        # break, which is exactly what test_a_dropped_window_is_freed_at_once
+        # forbids. Measured: three zero-argument methods and plain
+        # connections leave the window freed at once. (2026-09-24)
+        for keys, slot in (("Ctrl+=", self.zoom_in), ("Ctrl++", self.zoom_in),
+                           ("Ctrl+-", self.zoom_out),
+                           ("Ctrl+0", self.zoom_reset)):
+            QShortcut(QKeySequence(keys), self,
+                      context=Qt.ShortcutContext.WindowShortcut).activated.connect(slot)
 
         central = QWidget()
         outer = QVBoxLayout(central)
@@ -207,6 +229,30 @@ class DesktopWindow(QMainWindow):
                                if tray_available is None else tray_available)
         self.tray = self._make_tray() if self.tray_available else None
         self._restore_state()
+
+    # -- zoom ---------------------------------------------------------------
+
+    def zoom(self) -> float:
+        return self._zoom
+
+    def set_zoom(self, scale) -> None:
+        """One knob for every surface. QSS carries it everywhere except the
+        terminal, which paints itself and so listens to zoom_changed."""
+        scale = clamp_zoom(scale)
+        if scale == self._zoom:
+            return
+        self._zoom = scale
+        self.setStyleSheet(stylesheet(self._trader_qss, scale))
+        self.zoom_changed.emit(scale)
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self._zoom + ZOOM_STEP)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self._zoom - ZOOM_STEP)
+
+    def zoom_reset(self) -> None:
+        self.set_zoom(1.0)
 
     # -- the microphone -----------------------------------------------------
 
@@ -451,6 +497,7 @@ class DesktopWindow(QMainWindow):
             "section": self.current_section(),
             "panel_open": self.panel_open(),
             "panel_width": self._panel_width,
+            "zoom": self._zoom,
         })
         save_state(self._state_path, state)
 
@@ -465,6 +512,7 @@ class DesktopWindow(QMainWindow):
         self.setGeometry(rect.x, rect.y, rect.w, rect.h)
         self._start_maximized = bool(state.get("maximized"))
         self._panel_width = clamp_panel_width(state.get("panel_width", PANEL_DEFAULT_W))
+        self.set_zoom(state.get("zoom", 1.0))
         self._side_open = state.get("panel_open", True) is not False
         # Selecting the section shows (or hides) its side chat.
         names = self.section_names()
