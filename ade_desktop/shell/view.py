@@ -18,6 +18,8 @@ the old one.
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QFontMetricsF, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
@@ -77,6 +79,7 @@ class TerminalView(QWidget):
         self._metrics = QFontMetricsF(self._font)
         self._pending: list[str] = []
         self._dropped = 0
+        self._last_output = 0.0
         self.screen = TerminalScreen(80, 24)
         # NOT parented to this widget, deliberately. A closed tab calls
         # deleteLater(), and Qt would then destroy a child PtySession while
@@ -171,7 +174,20 @@ class TerminalView(QWidget):
     def pending_chunks(self) -> int:
         return len(self._pending)
 
+    BUSY_WINDOW_S = 2.0     # output this recently means something is running
+
+    def _looks_busy(self) -> bool:
+        """Whether a command appears to be producing output right now.
+
+        Used only to decide whether a Ctrl+C that killed nothing deserves an
+        explanation. At an idle prompt Ctrl+C legitimately does nothing
+        visible (PSReadLine abandons the line), and a note there would be
+        noise on every press.
+        """
+        return (time.monotonic() - self._last_output) < self.BUSY_WINDOW_S
+
     def _on_output(self, text: str) -> None:
+        self._last_output = time.monotonic()
         self._pending.append(text)
         if not self._flush_timer.isActive():
             self._flush_timer.start()
@@ -204,6 +220,18 @@ class TerminalView(QWidget):
             return
         if ctrl and shift and key == Qt.Key.Key_C:
             return                              # copy; selection lands later
+        if ctrl and not shift and key == Qt.Key.Key_C:
+            # Not just a keystroke -- see PtySession.interrupt for the three
+            # measured reasons why \x03 alone does not stop anything here.
+            if not self.session.interrupt() and self._looks_busy():
+                # Something is running that has no child process to kill:
+                # a pure-PowerShell loop, inside pwsh itself. Say so; a
+                # Ctrl+C that silently does nothing reads as a broken app.
+                self.screen.feed(
+                    "\r\n[Ctrl+C: nothing to interrupt -- this is running "
+                    "inside PowerShell itself, not as a separate program]\r\n")
+                self.update()
+            return
         data = sequence_for(key, mods, event.text())
         if data is not None:
             self.session.write(data)

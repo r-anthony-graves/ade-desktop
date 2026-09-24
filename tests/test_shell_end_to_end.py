@@ -102,3 +102,51 @@ def test_two_sessions_have_separate_working_directories(qapp):
         assert "TWO=C:\\Windows" not in text, "the second shell inherited the first's cwd"
     finally:
         pane.stop_all()
+
+
+def test_ctrl_c_stops_a_runaway_external_command(qapp):
+    """Ray, 2026-09-24: "ctrl c does not work".
+
+    Measured three ways: writing \x03 into the pty does not stop pwsh under
+    either pywinpty backend, and neither does a real CTRL_C_EVENT raised by
+    AttachConsole + GenerateConsoleCtrlEvent -- that reports SUCCESS while
+    the command carries on. So Ctrl+C kills the shell's CHILDREN instead,
+    which is the case that actually runs away: npm, pytest, ping, a server.
+
+    Falsify by removing the child_pids/taskkill loop from
+    PtySession.interrupt: ping keeps replying and this goes red."""
+    pane = ShellPane()
+    try:
+        pane.resize(900, 420)
+        pane.show()
+        qapp.processEvents()
+        view = pane.current()
+        _await(view, "PS ", seconds=30)
+
+        view.session.write("ping -n 30 127.0.0.1\r\n")
+        assert _await(view, "Reply from", seconds=20), "ping never started"
+        assert view.session.interrupt() is True, "no child process was found to kill"
+
+        # the shell survives and takes another command
+        view.session.write("echo ('ALI' + 'VE')\r\n")
+        assert _await(view, "ALIVE", seconds=20), _screen_text(view)[-400:]
+        assert view.session.is_alive(), "Ctrl+C killed the shell itself"
+    finally:
+        pane.stop_all()
+
+
+def test_interrupt_reports_false_when_there_is_no_child(qapp):
+    """A pure-PowerShell loop runs INSIDE pwsh with nothing to kill. The
+    honest answer is False, which is what makes the view explain itself
+    instead of appearing to do nothing."""
+    pane = ShellPane()
+    try:
+        pane.resize(900, 420)
+        pane.show()
+        qapp.processEvents()
+        view = pane.current()
+        _await(view, "PS ", seconds=30)
+        assert view.session.interrupt() is False
+        assert view.session.is_alive()
+    finally:
+        pane.stop_all()

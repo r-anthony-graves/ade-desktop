@@ -35,11 +35,13 @@ file touches a widget.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import shutil
 import subprocess
 import threading
+from ctypes import wintypes
 
 from PySide6.QtCore import QObject, Signal
 
@@ -63,6 +65,51 @@ def default_cwd() -> str:
     starts in the repo is a project tool, and requirement 2 is that this one
     navigates the whole computer."""
     return os.environ.get("USERPROFILE") or os.path.expanduser("~")
+
+
+def child_pids(parent: int) -> list[int]:
+    """Every process whose parent is `parent`, via the Toolhelp snapshot.
+
+    ctypes rather than `Get-CimInstance Win32_Process`: this runs on a
+    keypress, and spawning a PowerShell to answer it would cost about a
+    second of the interrupt a user just asked to be immediate.
+
+    Windows reuses pids, so a snapshot can name a dead pid's child. That is
+    survivable here -- the caller only ever taskkills what it finds, and
+    taskkill on a stale pid fails harmlessly -- but it is the reason this
+    must never be used to decide anything except "kill these now".
+    """
+    if os.name != "nt" or not parent:
+        return []
+
+    class ENTRY(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_char * 260)]
+
+    k32 = ctypes.windll.kernel32
+    snapshot = k32.CreateToolhelp32Snapshot(0x00000002, 0)   # TH32CS_SNAPPROCESS
+    if snapshot == -1:
+        return []
+    found: list[int] = []
+    try:
+        entry = ENTRY()
+        entry.dwSize = ctypes.sizeof(ENTRY)
+        ok = k32.Process32First(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID == parent:
+                found.append(int(entry.th32ProcessID))
+            ok = k32.Process32Next(snapshot, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snapshot)
+    return found
 
 
 def _taskkill_tree(pid) -> None:
@@ -176,6 +223,34 @@ class PtySession(QObject):
             self._proc.setwinsize(max(1, int(rows)), max(1, int(cols)))
         except Exception:               # noqa: BLE001 - a bad resize is not a dead shell
             pass
+
+    def interrupt(self) -> bool:
+        """Ctrl+C. Returns whether anything was actually stopped.
+
+        MEASURED 2026-09-24, and this is why it is not simply a keystroke:
+        writing  into the pty does NOT stop pwsh under either pywinpty
+        backend, and neither does a genuine CTRL_C_EVENT raised by
+        AttachConsole + GenerateConsoleCtrlEvent -- that reports success
+        while the loop carries on counting. Three measured failures.
+
+        So Ctrl+C kills the shell's CHILDREN -- npm, pytest, ping, a dev
+        server, the things that actually run away -- and never the shell
+        itself, which would take the session and its cwd with it.  is
+        still written, because anything that DOES honour it (PSReadLine
+        abandoning a half-typed line at the prompt) should keep working.
+
+        Its limit is honest and known: a pure-PowerShell loop runs INSIDE
+        pwsh with no child to kill, so nothing here can stop it. The view
+        says so on screen rather than appearing to do nothing.
+        """
+        proc = self._proc
+        if proc is None:
+            return False
+        children = child_pids(getattr(proc, "pid", 0) or 0)
+        for pid in children:
+            _taskkill_tree(pid)
+        self.write("")
+        return bool(children)
 
     def stop(self) -> None:
         """NO TAB, NO SHELL. Idempotent: quit calls it after a close did.
