@@ -152,13 +152,26 @@ class _Stoppable:
 
 
 class FakePanel(QLabel):
+    """Stands in for a ChatStack AND for its one session.
+
+    Since 2026-09-24 a page holds a STACK of chats (requirement 7): the
+    window calls stack.start() and walks stack.panels, while quit still
+    reaches each panel's on_quit/client/watcher. A stack of one is the
+    smallest fake that exercises both halves, and it keeps this test's
+    assertions about start and quit ORDER meaningful."""
+
     approval_needed = Signal(str)
+    reply_landed = Signal(str)
 
     def __init__(self, log, name="panel"):
         super().__init__(name)
         self.log, self.name = log, name
         self.client = _Stoppable(log, f"{name}.client")
         self.watcher = _Stoppable(log, f"{name}.watcher")
+        self.panels = [self]
+
+    def start(self):
+        self.watcher.start()
 
     def on_quit(self):
         self.log.append(f"{self.name}.on_quit")

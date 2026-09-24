@@ -142,6 +142,7 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     from ade_desktop.conversation.client import ConversationClient
     from ade_desktop.conversation.panel import ConversationPanel
     from ade_desktop.conversation.sessions import GENERAL, ApprovalRouter, session_for
+    from ade_desktop.conversation.stack import ChatStack
     from ade_desktop.conversation.threads import ThreadStore
     from ade_desktop.sections import build_sections
     from ade_desktop.shell.pane import ShellPane
@@ -154,18 +155,23 @@ def build_window(*, state_path: Path, quit_fn=None, orb: bool = True,
     approvals = ApprovalWatcher()
     router = ApprovalRouter(approvals)
 
-    def chat(name):
-        spec = session_for(name)
-        store = ThreadStore(Path(state_path).with_name(spec.threads_file))
-        client = ConversationClient(topic=spec.topic, session=spec.terminal)
-        conversation = ConversationPanel(client, router.watcher_for(name), store)
-        router.bind(name, conversation)
-        return conversation
+    def stack_for(name):
+        """A page's chats. Session 1 keeps today's file and topic, so no
+        history moves; `+` adds another with its own of each."""
+        def make(number):
+            spec = session_for(name, number)
+            key = f"{name}#{number}"
+            store = ThreadStore(Path(state_path).with_name(spec.threads_file))
+            client = ConversationClient(topic=spec.topic, session=spec.terminal)
+            conversation = ConversationPanel(client, router.watcher_for(key), store)
+            router.bind(key, conversation)
+            return conversation
+        return ChatStack(name, make, router=router)
 
-    panel = chat(GENERAL)
+    panel = stack_for(GENERAL)
     active = ActiveProject(state_path)
     sections = build_sections(active)
-    side = {section.name: chat(section.name) for section in sections}
+    side = {section.name: stack_for(section.name) for section in sections}
     # ONE shell pane, on the General page only (Ray, 2026-09-24, req 1).
     win = DesktopWindow(sections, AdeStatusClient(),
                         state_path=state_path, quit_fn=quit_fn, panel=panel,
@@ -238,6 +244,10 @@ def smoke_report(win) -> dict:
         "shell": (None if win.shell is None
                   else {"sessions": win.shell.session_count()}),
         "chats": ([GENERAL] if win.panel is not None else []) + list(win.side_panels),
+        "chat_sessions": {name: stack.session_count()
+                          for name, stack in (
+                              ([(GENERAL, win.panel)] if win.panel is not None else [])
+                              + list(win.side_panels.items()))},
         "chat_topics": sorted({c.client.topic for c in win.all_panels()}),
     }
 

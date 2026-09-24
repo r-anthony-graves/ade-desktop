@@ -40,14 +40,24 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "section"
 
 
-def session_for(name: str) -> SessionSpec:
+def session_for(name: str, index: int = 1) -> SessionSpec:
+    """One page can hold several chats (Ray, 2026-09-24, requirement 7).
+
+    SESSION 1 KEEPS TODAY'S NAMES EXACTLY -- General stays threads.json and
+    u/local/desktop -- so no existing history moves. Only sessions 2 and up
+    take a suffix.
+    """
+    index = max(1, int(index))
+    suffix = "" if index == 1 else f"-{index}"
     if name == GENERAL:
-        return SessionSpec(name, "general", "threads.json", TOPIC, SESSION)
+        return SessionSpec(name, "general", f"threads{suffix}.json",
+                           TOPIC + suffix, SESSION + suffix)
     slug = _slug(name)
-    # "chat" in the terminal name: the Code section's own terminal pane is
-    # ade-desktop-code, and a chat must never share (and 409) it.
-    return SessionSpec(name, slug, f"threads-{slug}.json", f"{TOPIC}-{slug}",
-                       f"ade-desktop-chat-{slug}")
+    # "chat" in the terminal name so a chat can never share (and 409) any
+    # other pane's Ade OS terminal session.
+    return SessionSpec(name, slug, f"threads-{slug}{suffix}.json",
+                       f"{TOPIC}-{slug}{suffix}",
+                       f"ade-desktop-chat-{slug}{suffix}")
 
 
 class SessionWatcher(QObject):
@@ -83,7 +93,8 @@ class ApprovalRouter(QObject):
         self.source = source
         self._watchers: dict[str, SessionWatcher] = {}
         self._chats: dict[str, weakref.ref] = {}
-        self._where: dict[str, str] = {}           # approval id -> chat name
+        self._where: dict[str, str] = {}           # approval id -> chat key
+        self._default: str | None = None           # where an unowned card goes
         self._running = False
         source.appeared.connect(self._on_appeared)
         source.vanished.connect(self._on_vanished)
@@ -111,12 +122,25 @@ class ApprovalRouter(QObject):
     def pending_count(self) -> int:
         return int(self.source.pending_count())
 
+    def set_default(self, key: str) -> None:
+        """Where an approval NOBODY owns goes.
+
+        ChatStack calls this when the selected General session changes. It
+        matters because a card delivered to a tab nobody is looking at is
+        never answered, and an unanswered approval times out -- and a
+        timeout DENIES. "Always session 1" would put it behind whichever
+        tab happens to be first.
+        """
+        self._default = key
+
     def _owner(self, turn_id) -> str:
         if turn_id:
             for name, ref in self._chats.items():
                 chat = ref()
                 if chat is not None and chat.owns_turn(turn_id):
                     return name
+        if self._default is not None and self._default in self._watchers:
+            return self._default
         return GENERAL if GENERAL in self._watchers else next(iter(self._watchers), GENERAL)
 
     def _on_appeared(self, approval) -> None:

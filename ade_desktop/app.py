@@ -222,8 +222,8 @@ class DesktopWindow(QMainWindow):
             self.splitter.addWidget(self.side)
             self.splitter.setStretchFactor(0, 1)
             self.splitter.setStretchFactor(1, 0)
-        for chat in self.all_panels():
-            chat.approval_needed.connect(self._on_approval_needed)
+        for stack in self.stacks():
+            stack.approval_needed.connect(self._on_approval_needed)
         if self.side_panels:
             # Inside THIS window only: an app must not take an OS key (the
             # avatar's lesson with Alt+Space).
@@ -309,16 +309,22 @@ class DesktopWindow(QMainWindow):
         for section in self.sections:
             if section.start is not None:
                 section.start()
-        for chat in self.all_panels():
-            chat.watcher.start()
+        for stack in self.stacks():
+            stack.start()
 
     # -- the conversation panel ---------------------------------------------
 
     # -- General: the conversation, full size ---------------------------------
 
+    def stacks(self) -> list:
+        """Every chat STACK: General's first, then each section's."""
+        return (([self.panel] if self.panel is not None else [])
+                + list(self.side_panels.values()))
+
     def all_panels(self) -> list:
-        """Every chat: General's first, then each section's."""
-        return ([self.panel] if self.panel is not None else []) + list(self.side_panels.values())
+        """Every chat SESSION, across every stack. Start, quit and the
+        approval wiring all walk sessions, not pages (2026-09-24, req 7)."""
+        return [panel for stack in self.stacks() for panel in stack.panels]
 
     def side_chat(self):
         """The chat shown beside the current section, or None (General,
@@ -369,8 +375,9 @@ class DesktopWindow(QMainWindow):
                 self._panel_width = clamp_panel_width(sizes[1])
 
     def _on_approval_needed(self, tool: str) -> None:
-        chat = self.sender()
-        section = next((name for name, c in self.side_panels.items() if c is chat), GENERAL)
+        stack = self.sender()
+        section = next((name for name, s in self.side_panels.items()
+                        if s is stack), GENERAL)
         self.raise_for_approval(tool, section)
 
     def raise_for_approval(self, tool: str, section: str | None = None) -> None:

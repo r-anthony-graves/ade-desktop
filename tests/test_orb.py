@@ -14,6 +14,8 @@ from PySide6.QtWidgets import QLabel
 
 from ade_desktop.app import DesktopWindow
 from ade_desktop.conversation.panel import ConversationPanel
+from ade_desktop.conversation.sessions import GENERAL
+from ade_desktop.conversation.stack import ChatStack
 from ade_desktop.conversation.threads import ThreadStore
 from ade_desktop.geometry import load_state, save_state
 from ade_desktop.orb.controller import AVATAR_NOTE, OrbController
@@ -114,11 +116,16 @@ class Rig:
         self.client, self.watcher = FakeClient(), FakeWatcher()
         self.panel = ConversationPanel(self.client, self.watcher,
                                        ThreadStore(tmp_path / "threads.json"))
+        # A page holds a STACK of chats since 2026-09-24 (requirement 7),
+        # so the window is given one. `self.panel` stays the inner session,
+        # which is what these tests drive; the orb and voice reach it
+        # through the stack, exactly as they do in the real app.
+        self.stack = ChatStack(GENERAL, lambda _n, p=self.panel: p)
         self.status = FakeStatus()
         quits = self.quits = []
         self.win = DesktopWindow([Section("Trader", QLabel("t"))], self.status,
                                  state_path=self.state, tray_available=tray,
-                                 quit_fn=lambda: quits.append(1), panel=self.panel)
+                                 quit_fn=lambda: quits.append(1), panel=self.stack)
         self.device = FakeDevice()
         spoken = self.spoken = []
 
@@ -657,9 +664,12 @@ def test_the_orb_is_busy_while_any_section_s_chat_works(qapp, tmp_path):
     r = Rig(tmp_path)
     side_client, side_watcher = FakeClient(), FakeWatcher()
     side = ConversationPanel(side_client, side_watcher, ThreadStore(tmp_path / "t-pm.json"))
+    # Both pages hold a STACK since 2026-09-24; the mood still walks every
+    # SESSION inside them, which is what this test is about.
+    side_stack = ChatStack("PM", lambda _n, p=side: p)
     win = DesktopWindow([Section("PM", QLabel("pm"))], r.status, state_path=r.state,
-                        tray_available=False, quit_fn=lambda: None, panel=r.panel,
-                        side_panels={"PM": side})
+                        tray_available=False, quit_fn=lambda: None, panel=r.stack,
+                        side_panels={"PM": side_stack})
     ctl = OrbController(window=win, orb=OrbWindow(), renderer=GlyphRenderer(epoch=0.0),
                         mood=Mood(), speaker=r.speaker, mic=MicListener(open_stream=r.device.open),
                         voice=r.voice, state_path=r.state, avatar_running=True)
