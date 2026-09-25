@@ -88,8 +88,15 @@ def _unfinished_note(result) -> str:
 
 
 def ask_reply(result) -> AskReply:
-    """The one place a /v1/ask reply becomes text. An escalate NEVER
-    dispatches: the answer stays on Chat and says nothing was staged."""
+    """The one place a /v1/ask reply becomes text.
+
+    An escalate still never dispatches HERE. Since Ade OS 2026-09-25 it raises
+    an approval instead, and `approval_id` says a card is waiting -- so the
+    reply points at it rather than ending the thread. Without that id no card
+    is coming (an older Ade OS, or a registry that failed) and the old wording
+    is the honest one: promising a review that never appears is worse than the
+    dead end, because Ray would wait for it.
+    """
     result = result if isinstance(result, dict) else {}
     text = result.get("answer") or ""
     cited = result.get("roots_cited") or []
@@ -110,6 +117,10 @@ def ask_reply(result) -> AskReply:
             re.fullmatch(r"(hi|hello|hey)[.!\s]*", cleaned, re.I):
         return AskReply("Hello, Ray.")
     where = f" in {esc['root']}" if esc.get("root") else ""
+    if esc.get("approval_id"):
+        return AskReply((cleaned + "\n\n" if cleaned else "")
+                        + f"Ade wants to make a change{where}. "
+                        "Approve or decline it on the card above.")
     return AskReply((cleaned + "\n\n" if cleaned else "")
                     + f"Ade would treat this as a change{where}. "
                     "It stays here — nothing was staged.")

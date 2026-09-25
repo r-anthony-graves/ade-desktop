@@ -680,8 +680,13 @@ class ConversationPanel(QWidget):
         self._seen_approvals.add(aid)
         tool = str(approval.get("tool") or "?")
         self.set_tab("chat")
+        # `kind` is threaded through so the card can tell a gated tool call
+        # from a change Ade is proposing (Ade OS 2026-09-25). Defaulted to
+        # "tool", which is what every record was before that.
         self._push("chat", "ade", "approval", "", {"approval": {
-            "id": aid, "tool": tool, "args": approval.get("args") or {}}})
+            "id": aid, "tool": tool,
+            "kind": str(approval.get("kind") or "tool"),
+            "args": approval.get("args") or {}}})
         self.approval_needed.emit(tool)
 
     def _card_message(self, approval_id: str) -> dict | None:
@@ -715,6 +720,17 @@ class ConversationPanel(QWidget):
         if err is None:
             meta["decided"] = f"{'Allowed' if allow else 'Denied'} {approval_id}"
             self.approval_decided.emit(bool(allow))
+            if allow:
+                # An APPROVED escalation is work Ray just said yes to, and
+                # nothing else will start it: Ade OS records the decision and
+                # deliberately executes nothing. Before this, Approve was a
+                # button with no consequence -- the card was a prettier
+                # version of the dead end it replaced.
+                #
+                # Only on THIS branch, after a successful decide. A failed
+                # decide has no recorded approval; a 409 answered elsewhere
+                # would run the work twice.
+                self._dispatch_escalation(msg)
         elif isinstance(err, dict) and err.get("code") == "already_decided":
             meta["decided"] = "Already decided elsewhere"
         else:
@@ -726,6 +742,28 @@ class ConversationPanel(QWidget):
                     f"Could not decide {approval_id}: {error_cause(result)}", live=True)
             return
         self._refresh(msg)
+
+    def _dispatch_escalation(self, msg: dict) -> None:
+        """Submit the task an approved escalation stands for, once.
+
+        Guarded by `dispatched` in the MESSAGE rather than on the widget, the
+        same way `decided` is: the watcher re-emits until the record stops
+        being pending, and a re-render must not start the work a second time.
+        """
+        meta = msg.setdefault("meta", {})
+        approval = meta.get("approval") or {}
+        args = approval.get("args") or {}
+        prompt = str(args.get("prompt") or "").strip()
+        if approval.get("kind") != "escalation" or meta.get("dispatched") \
+                or not prompt:
+            return
+        meta["dispatched"] = True
+        self._push("chat", "ade", "text", "Approved. Starting: %s" % prompt)
+        rid = self.client.task(prompt,
+                               str(args.get("task_type") or "coding"),
+                               list(self.store.skills))
+        self._pending[rid] = ("task", prompt)
+        self._save_soon()
 
     def _on_vanished(self, approval_id: str) -> None:
         msg = self._card_message(approval_id)
