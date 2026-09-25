@@ -68,6 +68,18 @@ QToolButton#micButton { background: #262b33; border: 1px solid #333a45;
                         border-radius: 3px; padding: 4px 14px; color: #d6d9de; }
 QToolButton#micButton[muted="true"] { background: #3a1f22; border-color: #d95757;
                                       color: #ff8a8a; font-weight: 700; }
+
+/* Every boundary in the app is draggable; this is what makes it LOOK it.
+   There was no QSplitter rule here at all, so a 4 px handle was drawn in
+   the default grey on a #17191d background and read as a gap rather than
+   a grip -- Ray, 2026-09-24, reported the areas as not resizable when two
+   of the three already were. 6 px is a real hit target; the hover colour
+   is what says "drag me" BEFORE you try. */
+QSplitter::handle { background: #2a2e35; }
+QSplitter::handle:horizontal { width: 6px; }
+QSplitter::handle:vertical { height: 6px; }
+QSplitter::handle:hover { background: #4f8cc9; }
+QSplitter::handle:pressed { background: #4f8cc9; }
 """
 
 

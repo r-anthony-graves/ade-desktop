@@ -35,6 +35,11 @@ ICON_PATH = Path(__file__).resolve().parent.parent / "icon.png"
 DEFAULT_W, DEFAULT_H = 1360, 860  # the trader window's size: its screens
                                   # were laid out for it
 PANEL_MIN_W, PANEL_MAX_W, PANEL_DEFAULT_W = 280, 900, 420
+# The rail is DRAGGABLE (Ray, 2026-09-24: "all the areas ... need to be
+# resizable"); it used to be setFixedWidth(160). Bounded on both sides: a
+# rail dragged to 4 px is a rail you cannot get hold of again, and one
+# dragged across half the window is not a rail.
+RAIL_MIN_W, RAIL_MAX_W, RAIL_DEFAULT_W = 120, 400, 160
 ZOOM_STEP = 0.1
 # General's chat : shell, on a first run. Deliberate rather than emergent:
 # left to sizeHint alone the terminal asks for 80x24 and WINS, which is as
@@ -45,6 +50,16 @@ GENERAL_SPLIT = (3, 2)
 # rail's first section is General's chat, full size; every other section has
 # a chat of its own beside it (conversation/sessions.py), so a question asked
 # in PM never lands in QA and one long ask never blocks another section.
+
+
+def clamp_rail_width(value) -> int:
+    """Same rule clamp_panel_width follows: a bad saved value must not open
+    the window unusable."""
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return RAIL_DEFAULT_W
+    return max(RAIL_MIN_W, min(RAIL_MAX_W, width))
 
 
 def clamp_panel_width(value) -> int:
@@ -187,7 +202,8 @@ class DesktopWindow(QMainWindow):
         body.setSpacing(0)
         self.rail = QListWidget()
         self.rail.setObjectName("rail")
-        self.rail.setFixedWidth(160)
+        self.rail.setMinimumWidth(RAIL_MIN_W)
+        self.rail.setMaximumWidth(RAIL_MAX_W)
         self.stack = QStackedWidget()
         for section in self.sections:
             self.rail.addItem(section.name)
@@ -210,8 +226,20 @@ class DesktopWindow(QMainWindow):
             self.stack.insertWidget(0, self.general_page)
         self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.rail.currentRowChanged.connect(self._on_rail_row)
-        body.addWidget(self.rail)
-        body.addWidget(self.stack, 1)
+        # NESTED, not flattened into one three-way splitter with `side`.
+        # _apply_side and _remember_panel_width both index
+        # self.splitter.sizes()[1]; flattening would shift that to [2] and
+        # rewrite logic that already works. A test pins the outer splitter
+        # at two children for exactly that reason.
+        self.body_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.body_splitter.setObjectName("bodySplitter")
+        self.body_splitter.setChildrenCollapsible(False)
+        self.body_splitter.addWidget(self.rail)
+        self.body_splitter.addWidget(self.stack)
+        self.body_splitter.setStretchFactor(0, 0)
+        self.body_splitter.setStretchFactor(1, 1)
+        self._rail_width = RAIL_DEFAULT_W
+        body.addWidget(self.body_splitter, 1)
         # rail + section | the conversation panel
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
@@ -372,6 +400,14 @@ class DesktopWindow(QMainWindow):
     def _toggle_panel(self) -> None:
         self.set_panel_open(not self.panel_open())
 
+    def rail_width(self) -> int:
+        """The rail's width as it stands, so a save records what is on
+        screen rather than what was last set."""
+        sizes = self.body_splitter.sizes()
+        if sizes and sizes[0] > 0:
+            self._rail_width = clamp_rail_width(sizes[0])
+        return self._rail_width
+
     def _remember_panel_width(self) -> None:
         if not self.side.isHidden():
             sizes = self.splitter.sizes()
@@ -525,6 +561,7 @@ class DesktopWindow(QMainWindow):
             "section": self.current_section(),
             "panel_open": self.panel_open(),
             "panel_width": self._panel_width,
+            "rail_width": self.rail_width(),
             "zoom": self._zoom,
             "general_split": (list(self.general_page.sizes())
                               if self.shell is not None else None),
@@ -543,6 +580,10 @@ class DesktopWindow(QMainWindow):
         self._start_maximized = bool(state.get("maximized"))
         self._panel_width = clamp_panel_width(state.get("panel_width", PANEL_DEFAULT_W))
         self.set_zoom(state.get("zoom", 1.0))
+        self._rail_width = clamp_rail_width(state.get("rail_width",
+                                                      RAIL_DEFAULT_W))
+        self.body_splitter.setSizes(
+            [self._rail_width, max(1, rect.w - self._rail_width)])
         split = state.get("general_split")
         if self.shell is not None:
             if (isinstance(split, list) and len(split) == 2

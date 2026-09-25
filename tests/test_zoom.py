@@ -102,3 +102,25 @@ def test_zoom_changed_is_emitted_for_the_terminal(tmp_path, qapp):
     assert seen == [1.4]
     win.set_zoom(1.4)
     assert seen == [1.4], "an unchanged zoom must not re-emit"
+
+
+def test_the_splitter_handles_are_visible_and_grabbable():
+    """Ray, 2026-09-24: "all the areas ... need to be resizable". Two of the
+    three already WERE -- theme.py just had no QSplitter rule at all, so a
+    4 px handle was drawn in the default grey on a #17191d background and
+    read as a gap rather than a grip.
+
+    Falsify by deleting the QSplitter block from DESKTOP_QSS."""
+    sheet = stylesheet(None)
+    assert "QSplitter::handle" in sheet
+    assert "QSplitter::handle:horizontal" in sheet
+    assert "QSplitter::handle:vertical" in sheet
+    # hover is what says "draggable" BEFORE you try to drag it
+    assert "QSplitter::handle:hover" in sheet
+
+
+def test_the_handle_rules_survive_a_zoom():
+    """The handles are styled in DESKTOP_QSS, which is concatenated after
+    the size block -- a zoom must not drop them."""
+    assert "QSplitter::handle" in stylesheet(None, 2.0)
+    assert "QSplitter::handle" in stylesheet("TRADER {}", 0.6)

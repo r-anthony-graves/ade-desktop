@@ -412,3 +412,76 @@ def test_general_stacks_chat_over_shell_with_a_usable_shell(qapp, tmp_path):
     assert view is not None
     assert view.grid()[1] >= 10, f"only {view.grid()[1]} rows: {view.height()}px"
     win.quit_app()
+
+
+def test_the_rail_is_draggable_not_fixed(qapp, tmp_path):
+    """Ray, 2026-09-24: "all the areas of the desktop General need to be
+    resizable". The rail was setFixedWidth(160) inside a plain QHBoxLayout,
+    so it could not be dragged at all.
+
+    Falsify by restoring setFixedWidth on the rail: a fixed widget reports
+    equal min and max, and this goes red."""
+    win, *_ = _window(tmp_path, tray=False)
+    assert win.rail.minimumWidth() < win.rail.maximumWidth(), "the rail is pinned"
+    assert win.body_splitter.indexOf(win.rail) == 0
+    assert win.body_splitter.indexOf(win.stack) == 1
+    assert win.body_splitter.count() == 2
+
+
+def test_the_rail_cannot_be_dragged_to_nothing(qapp, tmp_path):
+    """A rail dragged to 4 px is a rail you cannot get back."""
+    win, *_ = _window(tmp_path, tray=False)
+    assert win.rail.minimumWidth() >= 100
+    assert win.rail.maximumWidth() <= 500
+
+
+def test_the_rail_width_is_remembered(qapp, tmp_path):
+    win, *_ = _window(tmp_path, tray=False)
+    win.resize(1200, 800)
+    win.show()
+    qapp.processEvents()
+    win.body_splitter.setSizes([260, 940])
+    qapp.processEvents()
+    win.save_state()
+    again, *_ = _window(tmp_path, tray=False)
+    again.resize(1200, 800)
+    again.show()
+    qapp.processEvents()
+    assert abs(again.rail_width() - 260) <= 8, again.rail_width()
+
+
+def test_a_nonsense_saved_rail_width_is_clamped(qapp, tmp_path):
+    """The same rule panel_width already follows: a bad saved value must
+    not open the window unusable."""
+    from ade_desktop.app import clamp_rail_width, RAIL_MIN_W, RAIL_MAX_W
+    assert clamp_rail_width(9999) == RAIL_MAX_W
+    assert clamp_rail_width(1) == RAIL_MIN_W
+    assert clamp_rail_width("nonsense") == 160
+    assert clamp_rail_width(None) == 160
+
+
+def test_the_side_chat_width_logic_is_untouched_by_the_nesting(qapp, tmp_path):
+    """THE REASON the rail splitter is NESTED rather than flattened into a
+    three-way one: _apply_side and _remember_panel_width both index
+    self.splitter.sizes()[1]. Flattening would shift that to [2] and
+    rewrite logic that already works.
+
+    Falsify by flattening: self.splitter.count() becomes 3 and the side
+    panel width stops being sizes()[1]."""
+    log = []
+    win = DesktopWindow([Section("Trader", QLabel("t"))], FakeStatus(),
+                        state_path=tmp_path / "window.json",
+                        tray_available=False, quit_fn=lambda: log.append("quit"),
+                        panel=FakePanel(log, "general"),
+                        side_panels={"Trader": FakePanel(log, "trader")})
+    assert win.splitter.count() == 2, "the outer splitter must stay two-way"
+    assert win.splitter.indexOf(win.side) == 1
+    win.show_section("Trader")
+    win.resize(1200, 800)
+    win.show()
+    qapp.processEvents()
+    win.set_panel_open(True)
+    qapp.processEvents()
+    assert win.panel_open() is True
+    assert win.splitter.sizes()[1] > 0
+    win.quit_app()
