@@ -69,8 +69,20 @@ def message_widget(msg: dict) -> QWidget:
 
 class ApprovalCard(QFrame):
     """One approval. ONLY a click answers it: no default button, no
-    auto-default, no keyboard focus -- a keystroke meant for the input box
-    can never allow a tool call."""
+    auto-default, no keyboard focus -- a keystroke meant for the input box can
+    never allow a tool call, or approve a change.
+
+    Two shapes. A gated TOOL call is a turn already in flight, stopped part
+    way, so the card names the tool and shows its arguments. An ESCALATION
+    (Ade OS 2026-09-25) is a change Ade PROPOSES from a read-only turn, so the
+    question is whether the work should happen at all -- and a tool name over
+    a JSON blob does not ask it. Ray, 2026-09-25: "it should present as a
+    review and approve."
+
+    `kind` absent means "tool": every record was one before that date, and an
+    older Ade OS sends no `kind`. A malformed escalation with no `prompt`
+    falls back too, rather than offering an empty Approve.
+    """
 
     decided = Signal(str, bool)   # approval id, allow
 
@@ -79,22 +91,45 @@ class ApprovalCard(QFrame):
         meta = msg.get("meta") or {}
         approval = meta.get("approval") or {}
         self.approval_id = str(approval.get("id") or "")
+        card_args = approval.get("args") or {}
+        self.escalation_prompt = str(card_args.get("prompt") or "").strip()
+        self.is_escalation = bool(
+            approval.get("kind") == "escalation" and self.escalation_prompt)
         self.setObjectName("approvalCard")
         self.setStyleSheet("QFrame#approvalCard{background:#2b2416;"
                            "border:1px solid #d9a441;border-radius:8px;}")
         box = QVBoxLayout(self)
-        title = QLabel(f"Approval needed: {approval.get('tool', '?')}  "
-                       f"({self.approval_id})")
+        if self.is_escalation:
+            title = QLabel("Ade wants to make a change — review and "
+                           f"approve  ({self.approval_id})")
+        else:
+            title = QLabel(f"Approval needed: {approval.get('tool', '?')}  "
+                           f"({self.approval_id})")
         title.setStyleSheet("color:#d9a441;font-weight:700;")
+        title.setWordWrap(True)
         box.addWidget(title)
-        full = json.dumps(approval.get("args") or {}, indent=2, default=str)
-        shown = full if len(full) <= ARGS_CLIP else full[:ARGS_CLIP] + "…"
-        args = _label(shown, Qt.TextFormat.PlainText, "color:#d6d9de;", mono=True)
-        args.setToolTip(full)
-        box.addWidget(args)
+        if self.is_escalation:
+            # The work in Ade's own words, and the root it would run in:
+            # the two things a reviewer needs. Plain and wrapped -- a path is
+            # not markdown, and a prompt runs to a sentence.
+            what = _label(self.escalation_prompt, Qt.TextFormat.PlainText,
+                          "color:#d6d9de;")
+            what.setWordWrap(True)
+            box.addWidget(what)
+            root = card_args.get("root")
+            if root:
+                box.addWidget(_label(f"in {root}",
+                                     Qt.TextFormat.PlainText,
+                                     "color:#9aa1ab;", mono=True))
+        else:
+            full = json.dumps(card_args, indent=2, default=str)
+            shown = full if len(full) <= ARGS_CLIP else full[:ARGS_CLIP] + "…"
+            args = _label(shown, Qt.TextFormat.PlainText, "color:#d6d9de;", mono=True)
+            args.setToolTip(full)
+            box.addWidget(args)
         row = QHBoxLayout()
-        self.allow = QPushButton("Allow")
-        self.deny = QPushButton("Deny")
+        self.allow = QPushButton("Approve" if self.is_escalation else "Allow")
+        self.deny = QPushButton("Decline" if self.is_escalation else "Deny")
         for button in (self.allow, self.deny):
             button.setAutoDefault(False)
             button.setDefault(False)
